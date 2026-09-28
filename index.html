@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pokémon Gridiron</title>
+  <meta name="description" content="Watch a fully simulated 7-on-7 football game where every player is a Pokémon." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Oswald:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%23fff' stroke='%23222' stroke-width='8'/%3E%3Cpath d='M4 50a46 46 0 0 1 92 0z' fill='%23e53935' stroke='%23222' stroke-width='8'/%3E%3Ccircle cx='50' cy='50' r='13' fill='%23fff' stroke='%23222' stroke-width='8'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="ball-icon" aria-hidden="true"></span>
+      <div>
+        <h1>Pokémon Gridiron</h1>
+        <p class="tag">7-on-7 football simulation</p>
+      </div>
+    </div>
+    <button id="btn-new" class="ghost hidden" type="button">New game</button>
+  </header>
+
+  <!-- ============ SETUP ============ -->
+  <main id="setup" class="setup">
+    <section class="setup-intro">
+      <h2>Pick your matchup</h2>
+      <p>Choose an away team, then a home team. Every play is called by each coach's AI and simulated player by player. QBs read progressions, defenders play their zones and man assignments, and ratings come from each Pokémon's base stats.</p>
+    </section>
+    <div class="matchup-bar">
+      <div class="slot" id="slot-away"><span class="slot-label">Away</span><span class="slot-name">Select a team</span></div>
+      <span class="vs">@</span>
+      <div class="slot" id="slot-home"><span class="slot-label">Home</span><span class="slot-name">Select a team</span></div>
+      <div class="setup-actions">
+        <label class="seed">Seed <input id="seed" type="number" min="1" max="999999999" placeholder="random" /></label>
+        <button id="btn-random" type="button" class="ghost">Random</button>
+        <button id="btn-start" type="button" class="primary" disabled>Kick off</button>
+      </div>
+    </div>
+    <div id="team-grid" class="team-grid"></div>
+  </main>
+
+  <!-- ============ GAME ============ -->
+  <main id="game" class="game hidden">
+    <div class="scorebug" id="scorebug"></div>
+
+    <div class="stage-wrap">
+      <div class="stage" id="stage">
+        <canvas id="field"></canvas>
+        <div id="tokens" class="tokens"></div>
+        <canvas id="overlay"></canvas>
+        <div id="playcard" class="playcard hidden"></div>
+        <div id="toast" class="toast hidden"></div>
+        <div id="final" class="final hidden"></div>
+      </div>
+      <div class="controls">
+        <div class="ctrl-group">
+          <button id="btn-play" type="button" class="primary" aria-label="Play or pause">▶ Play</button>
+          <button id="btn-step" type="button" title="Run the next play, then pause">Next play</button>
+          <button id="btn-sim" type="button" title="Simulate the rest of the game instantly">Sim to end</button>
+        </div>
+        <div class="ctrl-group speed" role="group" aria-label="Playback speed">
+          <span class="ctrl-label">Speed</span>
+          <button data-speed="0.5" type="button">½×</button>
+          <button data-speed="1" type="button" class="on">1×</button>
+          <button data-speed="2" type="button">2×</button>
+          <button data-speed="4" type="button">4×</button>
+        </div>
+        <div class="ctrl-group toggles">
+          <label><input type="checkbox" id="opt-routes" checked /> Play design</label>
+          <label><input type="checkbox" id="opt-reads" checked /> QB reads</label>
+          <label><input type="checkbox" id="opt-names" /> Names</label>
+          <label class="select">Sprites
+            <select id="opt-sprites">
+              <option value="home">Pokémon HOME</option>
+              <option value="bw">Gen 5 animated</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div id="lastplay" class="lastplay"></div>
+    </div>
+
+    <aside class="panel">
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="pbp" class="on" type="button">Play-by-play</button>
+        <button role="tab" data-tab="box" type="button">Box score</button>
+        <button role="tab" data-tab="team" type="button">Team stats</button>
+        <button role="tab" data-tab="roster" type="button">Rosters</button>
+      </nav>
+      <div class="tab-body" id="tab-pbp"></div>
+      <div class="tab-body hidden" id="tab-box"></div>
+      <div class="tab-body hidden" id="tab-team"></div>
+      <div class="tab-body hidden" id="tab-roster"></div>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    Sprites from <a href="https://pokemondb.net/sprites" target="_blank" rel="noopener">pokemondb.net</a>. Pokémon © Nintendo / Game Freak / The Pokémon Company. A fan project, not affiliated with them.
+  </footer>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

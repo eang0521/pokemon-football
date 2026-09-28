@@ -1,0 +1,1 @@
+{ "name": "pokemon-football", "private": true, "type": "module", "scripts": { "fetch-data": "node tools/fetch-pokemon.mjs" } }
