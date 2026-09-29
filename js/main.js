@@ -46,7 +46,11 @@ function renderTeamGrid() {
       <div class="info">
         <div class="tname">${esc(t.city)} ${esc(t.name)}</div>
         <div class="coach">${esc(c.name)} · ${esc(c.style)}</div>
-        <div class="sets"><span class="set">${PERSONNEL[personnelOf(t.roster)].name}</span><span class="set">${FRONTS[frontOf(t.roster)].name}</span>${(() => { const o = unitCounts(t.roster, 'O'), d = unitCounts(t.roster, 'D'); return synergyChips(o.counts, o.active, { compact: true, onlyActive: true }).replace(/class="syn/g, 'data-u="O" class="syn') + synergyChips(d.counts, d.active, { compact: true, onlyActive: true }).replace(/class="syn/g, 'data-u="D" class="syn'); })()}</div>
+        ${(() => {
+          const o = unitCounts(t.roster, 'O'), d = unitCounts(t.roster, 'D');
+          const row = (label, set, u) => `<div class="unit-row"><span class="unit-lab">${label}</span><span class="set">${set}</span>${synergyChips(u.counts, u.active, { compact: true, onlyActive: true }) || '<span class="muted small">no synergies</span>'}</div>`;
+          return `<div class="sets">${row('OFF', PERSONNEL[personnelOf(t.roster)].name, o)}${row('DEF', FRONTS[frontOf(t.roster)].name, d)}</div>`;
+        })()}
         <div class="meters">${meter('Pass', c.passRate)}${meter('Aggressive', c.aggression)}${meter('Blitz', c.blitzRate)}${meter('Man cov.', c.manRate)}</div>
         <div class="card-foot"><span class="pick"></span>${t.custom ? `<button type="button" class="ghost edit" data-edit="${t.id}">Edit</button>` : ''}</div>
       </div>

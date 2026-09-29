@@ -196,7 +196,10 @@ table.st td.pl img { width: 24px; height: 24px; object-fit: contain; }
 .team-card { border: 1px solid var(--line); cursor: pointer; transition: border-color .15s, transform .1s; }
 .team-card:hover { border-color: #4a5868; }
 .team-card:focus-visible { outline: 2px solid var(--accent2); }
-.team-card .sets { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.team-card .sets { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.team-card .unit-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.team-card .unit-lab { font-size: 10px; font-weight: 800; letter-spacing: .5px; color: var(--muted); width: 26px; flex: none; }
+.team-card .unit-row .syn { margin: 0; }
 .team-card .set { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
 .team-card .card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; min-height: 24px; }
 .team-card .edit { padding: 3px 10px; font-size: 12px; }
@@ -291,4 +294,3 @@ table.st td.best { color: var(--muted); font-size: 11px; white-space: normal; te
 .b-syn { margin-top: 6px; line-height: 1.9; }
 .b-syn > .muted { margin-right: 4px; }
 .pc-syn { margin-top: 6px; }
-.team-card .sets .syn[data-u="D"] { border-style: dashed; }
