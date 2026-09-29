@@ -171,7 +171,7 @@ const ctl = {
   game: null, client: null, renderer: null, playing: false, speed: store.get('speed', 1), stepOnce: false,
   cur: null, phase: 'idle', phaseT: 0, preDur: 0, playDur: 0, postDur: 0, lastRec: null, evIdx: 0,
   queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null,
-  opts: { design: store.get('design', true), reads: store.get('reads', true), names: store.get('names', false), sprites: store.get('sprites', 'home') },
+  opts: { design: store.get('design', true), reads: store.get('reads', true), names: store.get('names', false), sprites: store.get('sprites', 'home'), playcard: store.get('playcard', 'snap') },
 };
 
 function startGame(awayId, homeId, seed) {
@@ -436,7 +436,7 @@ function frame(now, fromTimer = false) {
   if (ctl.cur && ctl.renderer && ctl.game) {
     const ft = ctl.phase === 'play' ? ctl.phaseT : ctl.phase === 'pre' ? 0 : ctl.playDur;
     ctl.renderer.draw(ctl.cur, ft, ctl.game, drawOpts(ft));
-    if (ctl.phase === 'play' && ctl.phaseT > 0.1) $('#playcard').classList.add('hidden');
+    if (ctl.phase === 'play' && ctl.phaseT > 0.1 && ctl.opts.playcard === 'snap') $('#playcard').classList.add('hidden');
   }
   if (!fromTimer) requestAnimationFrame(frame);
 }
@@ -517,6 +517,13 @@ $('#opt-sprites').addEventListener('change', (e) => {
   ctl.opts.sprites = e.target.value; store.set('sprites', ctl.opts.sprites);
   if (ctl.renderer) { ctl.renderer.spriteStyle = ctl.opts.sprites; if (ctl.cur) ctl.renderer.ensureTokens(ctl.cur, ctl.game); }
 });
+// Play card: 'snap' = shown before each snap, 'always' = stays up during plays, 'off' = never.
+$('#opt-playcard').value = ctl.opts.playcard;
+$('#opt-playcard').addEventListener('change', (e) => {
+  ctl.opts.playcard = e.target.value; store.set('playcard', ctl.opts.playcard);
+  const show = ctl.cur && ctl.phase !== 'final' && (ctl.opts.playcard === 'always' || (ctl.opts.playcard === 'snap' && ctl.phase === 'pre'));
+  if (show) renderPlaycard(ctl.cur); else $('#playcard').classList.add('hidden');
+});
 function applyOpts() { $('#stage').classList.toggle('names', ctl.opts.names); }
 applyOpts();
 document.addEventListener('keydown', (e) => {
@@ -538,7 +545,7 @@ function renderPlaycard(rec) {
     ${p.decision ? `<div class="decision">${esc(p.decision)}</div>` : ''}
     ${p.audible ? `<div class="decision">Audible! ${esc(p.audible)}</div>` : ''}
     ${p.syn && (Object.keys(p.syn.off).length || Object.keys(p.syn.def).length) ? `<div class="pc-syn">${Object.keys(p.syn.off).length ? `<span class="muted">${off.abbr}</span> ${synergyChips(p.syn.off, p.syn.off, { compact: true })}` : ''} ${Object.keys(p.syn.def).length ? `<span class="muted">${def.abbr}</span> ${synergyChips(p.syn.def, p.syn.def, { compact: true })}` : ''}</div>` : ''}`;
-  $('#playcard').classList.remove('hidden');
+  $('#playcard').classList.toggle('hidden', ctl.opts.playcard === 'off');
 }
 let toastTimer;
 function showToast(text, small = false) {

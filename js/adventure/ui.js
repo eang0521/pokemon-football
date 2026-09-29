@@ -355,8 +355,11 @@ function summaryHTML() {
 let rosterSel = null;
 function openRoster() {
   rosterSel = null;
-  openModal('<div id="rst"></div>', (d) => {
+  openModal(`<div id="rst-head"></div>
+    <details class="b-coach"><summary>Coach tendencies</summary><div id="r-coach"></div></details>
+    <div id="rst"></div>`, (d) => {
     if (!d.rosterWired) { d.addEventListener('click', onRosterClick); d.rosterWired = true; }
+    coachControls($('#r-coach', d), run.team.coach, save);
     renderRoster(d);
   }, { wide: true });
 }
@@ -384,17 +387,21 @@ function renderRoster(d = document.querySelector('dialog.modal')) {
   }
   const inLineup = new Set(Object.values(run.lineup));
   const reserve = run.cards.filter((c) => !inLineup.has(c.uid)).sort((a, b) => a.pos.localeCompare(b.pos) || ovrOf(b) - ovrOf(a));
-  el.innerHTML = `<div class="rhead"><h3>Roster</h3><span>Team <b>${tr.ovr}</b> OVR (${ord(tr.pct)})</span>
+  const head = $('#rst-head', d);
+  const gt = A.gameTeam(run).roster, uo = unitCounts(gt, 'O'), ud = unitCounts(gt, 'D');
+  head.innerHTML = `<div class="rhead"><h3>Roster</h3><span>Team <b>${tr.ovr}</b> OVR (${ord(tr.pct)})</span>
       <label class="small"><input type="checkbox" id="r-auto" ${run.autoManage !== false ? 'checked' : ''}> Auto-manage lineup</label>
-      <button type="button" data-ra="best">Best lineup now</button><button type="button" class="ghost" data-close>Done</button></div>
-    <p class="muted small">Click a slot to change who plays there. With auto-manage on, your best healthy cards are placed automatically whenever your roster changes; editing a slot turns it off.</p>
-    ${chooser}
+      <button type="button" data-ra="best">Best lineup now</button><button type="button" class="primary" data-close>Done</button></div>
+    <div class="unit-row mine"><span class="unit-lab">OFF</span>${synergyChips(uo.counts, uo.active, { compact: true, onlyActive: true }) || '<span class="muted small">no synergies</span>'}
+      <span class="unit-lab">DEF</span>${synergyChips(ud.counts, ud.active, { compact: true, onlyActive: true }) || '<span class="muted small">no synergies</span>'}</div>
+    <p class="muted small">Click a slot to change who plays there. With auto-manage on, your best healthy cards are placed automatically whenever your roster changes (when two lineups are about as strong, the one with more type synergies wins); editing a slot turns it off.</p>`;
+  $('#r-auto', head).onchange = (e) => { run.autoManage = e.target.checked; if (run.autoManage) A.autoLineup(run); save(); renderRoster(); render(); };
+  el.innerHTML = `${chooser}
     ${group('Offense', STARTERS.filter((s) => s.unit === 'O'))}
     ${group('Defense & kicker', STARTERS.filter((s) => s.unit !== 'O'))}
     ${group('Bench', BENCH)}
     <div class="b-gtitle">Reserve (${reserve.length})</div>
     ${reserve.length ? `<div class="acard-grid">${reserve.map((c) => cardTile(c)).join('')}</div>` : '<p class="muted small">Every card is in the lineup.</p>'}`;
-  $('#r-auto', el).onchange = (e) => { run.autoManage = e.target.checked; if (run.autoManage) A.autoLineup(run); save(); renderRoster(); };
 }
 function onRosterClick(e) {
   const b = e.target.closest('button');

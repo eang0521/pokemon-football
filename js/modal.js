@@ -4,11 +4,11 @@ export function openModal(html, onReady, { wide = false } = {}) {
   if (!dlg) {
     dlg = document.createElement('dialog');
     document.body.appendChild(dlg);
-    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+    // backdrop clicks and any [data-close] button close it (delegated, so re-rendered content works too)
+    dlg.addEventListener('click', (e) => { if (e.target === dlg || e.target.closest('[data-close]')) dlg.close(); });
   }
   dlg.className = wide ? 'modal wide' : 'modal';
   dlg.innerHTML = `<div class="modal-body">${html}</div>`;
-  dlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => dlg.close()));
   if (!dlg.open) dlg.showModal();
   onReady?.(dlg);
   return dlg;

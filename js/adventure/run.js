@@ -6,6 +6,7 @@ import { POKEMON } from '../data/pokemon.js';
 import { COACH_PRESETS } from '../data/teams.js';
 import { POSITIONS } from '../ratings.js';
 import { ALL_SLOTS, STARTERS, cardValue } from '../roster.js';
+import { tierFor, SYNERGIES } from '../synergy.js';
 import { randomCard, openPack, priceOf, sellValue, pctOfCard, ovrOf, trainingBoost, randomPos } from './cards.js';
 
 export const ACTS = 3;
@@ -66,8 +67,81 @@ export const ownedMons = (run) => new Set(run.cards.map((c) => c.mon));
 // Best lineup from healthy cards (greedy, strongest first; one card per Pokémon).
 // keep=true keeps current valid assignments and only fills the gaps.
 const SLOT_ORDER = [...STARTERS.filter((s) => s.pos.length === 1), ...STARTERS.filter((s) => s.pos.length > 1), ...ALL_SLOTS.filter((s) => s.unit === 'B')];
+// What a type-synergy tier is worth when comparing lineups, in total starter OVR. From the
+// synergy calibration (tools/synergy-calibrate.mjs), a tier-II synergy adds ~7% win rate,
+// about what +10 total OVR across the starters buys.
+export const SYNERGY_WORTH = [0, 1, 2, 3];
+const UNITS = ['O', 'D'].map((u) => STARTERS.filter((s) => s.unit === u));
+
+// Starting lineup value: starters' OVR plus active type synergies in each unit.
+export function lineupScore(run, lineup, ovr = new Map()) {
+  const byUid = new Map(run.cards.map((c) => [c.uid, c]));
+  const o = (c) => { if (!ovr.has(c.uid)) ovr.set(c.uid, ovrOf(c)); return ovr.get(c.uid); };
+  let total = 0;
+  for (const s of STARTERS) { const c = byUid.get(lineup[s.key]); total += c ? o(c) : 30; } // 30: a walk-on
+  for (const unit of UNITS) {
+    const counts = {};
+    for (const s of unit) { const c = byUid.get(lineup[s.key]); if (c) for (const t of POKEMON[c.mon].types) counts[t] = (counts[t] || 0) + 1; }
+    for (const t in counts) if (SYNERGIES[t]) total += SYNERGY_WORTH[tierFor(counts[t])];
+  }
+  return total;
+}
+
+// Best starters for the synergy-aware score: greedy lineups (plain, and one leaning toward
+// each type the collection could stack), each improved by single swaps; keep the best.
+function bestStarters(run, ranked) {
+  const ovr = new Map(ranked.map((x) => [x.c.uid, x.ovr]));
+  const cards = ranked.map((x) => x.c);
+  const byUid = new Map(cards.map((c) => [c.uid, c]));
+  const score = (l) => lineupScore(run, l, ovr);
+  const order = [...STARTERS.filter((s) => s.pos.length === 1), ...STARTERS.filter((s) => s.pos.length > 1)];
+  const greedy = (bias) => {
+    const l = {}, used = new Set();
+    const pool = cards.map((c) => ({ c, v: ovr.get(c.uid) + (bias && POKEMON[c.mon].types.includes(bias) ? 8 : 0) })).sort((a, b) => b.v - a.v);
+    for (const s of order) {
+      const pick = pool.find(({ c }) => s.pos.includes(c.pos) && !used.has(c.mon));
+      if (pick) { l[s.key] = pick.c.uid; used.add(pick.c.mon); }
+    }
+    return l;
+  };
+  const improve = (l) => {
+    let best = score(l);
+    for (let pass = 0; pass < 6; pass++) {
+      let improved = false;
+      for (const s of STARTERS) {
+        for (const c of cards) {
+          if (!s.pos.includes(c.pos) || l[s.key] === c.uid) continue;
+          const t = { ...l }, cur = t[s.key];
+          const from = STARTERS.find((x) => t[x.key] === c.uid);
+          if (from) { // swap two starters (only if the other card fits there)
+            const cc = byUid.get(cur);
+            if (!cc || !from.pos.includes(cc.pos)) continue;
+            t[from.key] = cur;
+          } else if (STARTERS.some((x) => x.key !== s.key && byUid.get(t[x.key])?.mon === c.mon)) continue;
+          t[s.key] = c.uid;
+          const sc = score(t);
+          if (sc > best + 1e-6) { best = sc; l = t; improved = true; }
+        }
+      }
+      if (!improved) break;
+    }
+    return { l, best };
+  };
+  const typeCounts = {};
+  for (const c of cards) for (const t of POKEMON[c.mon].types) typeCounts[t] = (typeCounts[t] || 0) + 1;
+  const seeds = [null, ...Object.keys(typeCounts).filter((t) => typeCounts[t] >= 2)];
+  let top = null;
+  for (const b of seeds) { const r = improve(greedy(b)); if (!top || r.best > top.best) top = r; }
+  return top.l;
+}
+
 export function autoLineup(run, keep = false) {
   const next = {}, usedUid = new Set(), usedMon = new Set();
+  const ranked = run.cards.filter(healthy).map((c) => ({ c, ovr: ovrOf(c) })).sort((a, b) => b.ovr - a.ovr);
+  if (!keep) {
+    const st = bestStarters(run, ranked);
+    for (const k in st) { const c = run.cards.find((x) => x.uid === st[k]); next[k] = c.uid; usedUid.add(c.uid); usedMon.add(c.mon); }
+  }
   if (keep) {
     for (const s of SLOT_ORDER) {
       const c = cardByUid(run, run.lineup[s.key]);
@@ -76,7 +150,6 @@ export function autoLineup(run, keep = false) {
       }
     }
   }
-  const ranked = run.cards.filter(healthy).map((c) => ({ c, ovr: ovrOf(c) })).sort((a, b) => b.ovr - a.ovr);
   for (const s of SLOT_ORDER) {
     if (next[s.key]) continue;
     const pick = ranked.find(({ c }) => s.pos.includes(c.pos) && !usedUid.has(c.uid) && !usedMon.has(c.mon));
