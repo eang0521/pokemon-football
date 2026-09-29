@@ -150,8 +150,8 @@ export const DEFENSES = [
   { id: 'c1blitz', name: 'Cover 1 Blitz', tags: ['man', 'blitz'], man: true, blitz: 1, extras: ['deepMid', 'hookM'] },
   { id: 'c0', name: 'Cover 0 Blitz', tags: ['man', 'blitz'], man: true, press: true, blitz: 'all' },
   { id: 'c3', name: 'Cover 3', tags: ['zone'], zones: ['thirdW', 'thirdS', 'thirdM', 'curlS', 'curlW', 'hookM'] },
-  { id: 'c2', name: 'Cover 2', tags: ['zone'], zones: ['halfW', 'halfS', 'hookS', 'hookW', 'hookM'] },
-  { id: 'c4', name: 'Cover 4 Match', tags: ['zone'], zones: ['quarterW', 'quarterS', 'deepMid', 'hookS', 'hookW'] },
+  { id: 'c2', name: 'Cover 2', tags: ['zone'], zones: ['halfW', 'halfS', 'flatW', 'flatS', 'hookM'] },
+  { id: 'c4', name: 'Cover 4 Match', tags: ['zone'], zones: ['quarterW', 'quarterS', 'deepMid', 'curlS', 'curlW'] },
   { id: 'cloud', name: 'Cloud', tags: ['zone'], zones: ['deepMid', 'flatW', 'flatS', 'deepHookS', 'deepHookW'] },
   { id: 'fireZone', name: 'Fire Zone Blitz', tags: ['zone', 'blitz'], blitz: 1, zones: ['thirdW', 'thirdS', 'thirdM', 'hookM'] },
   { id: 'runBlitz', name: 'Run Blitz', tags: ['man', 'blitz', 'run'], man: true, blitz: 2, extras: ['hookM'] },
@@ -180,7 +180,7 @@ export function resolveDefense(call, defenders, eligibles) {
   const rushScore = (d) => d.r.rushFin * 0.6 + d.r.spd * 0.4 + (d.kind === 'LB' ? 15 : 0);
 
   const men = call.man ? ['WR', 'FX', 'RB'].map((k) => eligibles[k]).filter(Boolean)
-    .sort((a, b) => (b.detached - a.detached) || (b.r.spd - a.r.spd)) : [];
+    .sort((a, b) => ((b.pos === call.bracket) - (a.pos === call.bracket)) || (b.detached - a.detached) || (b.r.spd - a.r.spd)) : [];
   const nBlitz = call.blitz === 'all' ? Math.max(0, free.length - men.length) : Math.min(call.blitz || 0, Math.max(0, free.length - men.length));
 
   // deep help first (needs the right athletes), then blitzers, then man, then the rest
@@ -201,7 +201,14 @@ export function resolveDefense(call, defenders, eligibles) {
     for (const x of extras) { if (!free.length) break; out[take(free, underScore).slot] = x === 'spy' ? 'spy' : { zone: x }; }
     while (free.length) out[take(free, underScore).slot] = { zone: 'hookM' };
   } else {
-    const zones = call.zones.slice(0, free.length);
+    // match personnel: only as many deep defenders as there are wide threats (+1);
+    // extra deep bodies rotate down into the box vs tight end / 2-back sets
+    const wide = ['WR', 'FX', 'RB'].filter((k) => eligibles[k]?.detached).length;
+    const maxDeep = call.id === 'prevent' ? 9 : Math.max(1, wide + 1);
+    let deepUsed = 0;
+    const zones = call.zones.filter((z) => !isDeep(z) || deepUsed++ < maxDeep);
+    while (zones.length < free.length) zones.push(zones.length % 2 ? 'hookS' : 'hookW');
+    zones.length = free.length;
     // fill deep zones first with the best deep athletes
     for (const z of zones.filter(isDeep)) out[take(free, deepScore).slot] = { zone: z };
     for (const z of zones.filter((z) => !isDeep(z))) {

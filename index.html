@@ -28,13 +28,14 @@
     <section class="setup-intro">
       <h2>Pick your matchup</h2>
       <p>Choose an away team, then a home team, or build your own from any Pokémon card. Every card is a Pokémon at a position, and its six base stats mean something different at each position. Coaches call every play, and players get tired and rotate in from the bench.</p>
-      <button id="btn-build" type="button" class="primary build-btn">＋ Build a team</button>
+      <div class="build-row"><button id="btn-build" type="button" class="primary build-btn">＋ Build a team</button><button id="btn-import" type="button" class="build-btn">Import a team code</button></div>
     </section>
     <div class="matchup-bar">
       <div class="slot" id="slot-away"><span class="slot-label">Away</span><span class="slot-name">Select a team</span></div>
       <span class="vs">@</span>
       <div class="slot" id="slot-home"><span class="slot-label">Home</span><span class="slot-name">Select a team</span></div>
       <div class="setup-actions">
+        <label class="seed"><input id="opt-injuries" type="checkbox" checked /> Injuries</label>
         <label class="seed">Seed <input id="seed" type="number" min="1" max="999999999" placeholder="random" /></label>
         <button id="btn-random" type="button" class="ghost">Random</button>
         <button id="btn-start" type="button" class="primary" disabled>Kick off</button>
@@ -54,6 +55,7 @@
         <label class="color">Secondary <input id="b-c2" type="color" value="#ffcb05" /></label>
       </div>
       <div class="b-actions">
+        <button id="b-share" type="button" title="Get a code or link to share this team">Share code</button>
         <button id="b-auto" type="button" title="Fill empty slots with the best available cards (respects the BST cap)">Auto-fill</button>
         <button id="b-clear" type="button" class="ghost">Clear</button>
         <button id="b-delete" type="button" class="ghost danger hidden">Delete</button>

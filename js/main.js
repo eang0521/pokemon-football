@@ -1,11 +1,14 @@
 import { TEAMS } from './data/teams.js';
 import { POKEMON } from './data/pokemon.js';
-import { Game } from './game.js';
+import { GameView, EngineClient, recFrames } from './client.js';
 import { FieldRenderer, spriteUrl } from './render.js';
 import { STAT_KEYS, STAT_LABELS } from './ratings.js';
 import { STARTERS, BENCH, parseCard, personnelOf, frontOf, PERSONNEL, FRONTS } from './roster.js';
 import { loadCustomTeams } from './storage.js';
 import { openBuilder, wireBuilder, TYPE_COLORS, synergyChips, unitCounts } from './builder.js';
+import { encodeTeam, decodeTeam } from './teamcode.js';
+import { openModal, closeModal } from './modal.js';
+import { saveCustomTeam } from './storage.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -19,7 +22,42 @@ const typeChips = (types) => `<span class="types">${types.map((t) => `<span clas
 const clockText = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const qText = (q) => (q === 5 ? 'OT' : ['1st', '2nd', '3rd', '4th'][q - 1]);
 const allTeams = () => [...loadCustomTeams(), ...TEAMS];
-const findTeam = (id) => allTeams().find((t) => t.id === id);
+// teams embedded in shared game links ("~CODE") are decoded on the fly (not saved)
+const linkTeams = new Map();
+const findTeam = (id) => {
+  if (!id) return null;
+  if (id.startsWith('~')) {
+    if (!linkTeams.has(id)) { const { team } = decodeTeam(id); linkTeams.set(id, team ? { ...team, id, linked: true } : null); }
+    return linkTeams.get(id);
+  }
+  return allTeams().find((t) => t.id === id);
+};
+// id to put in a shareable game URL: custom teams travel as their code
+const urlId = (t) => (t.custom ? `~${encodeTeam(t)}` : t.id);
+
+function importDialog(prefill = '') {
+  openModal(`<h3>Import a team</h3>
+    <p class="muted small">Paste a team code (or a link someone shared).</p>
+    <textarea class="code" id="m-code" rows="4" placeholder="PG1...">${esc(prefill)}</textarea>
+    <div id="m-msg" class="small"></div>
+    <div class="modal-actions"><button type="button" class="primary" id="m-import">Import</button><button type="button" class="ghost" data-close>Cancel</button></div>`, (d) => {
+    const go = () => {
+      const { team, errors } = decodeTeam(d.querySelector('#m-code').value);
+      const msg = d.querySelector('#m-msg');
+      if (!team) { msg.innerHTML = `<span class="b-errors">${esc(errors[0])}</span>`; return; }
+      if (errors.length) { msg.innerHTML = `<span class="b-errors">Imported, but the roster needs work: ${esc(errors.slice(0, 2).join('; '))}. Open it in the builder to finish.</span>`; }
+      saveCustomTeam(team);
+      renderTeamGrid();
+      if (!errors.length) {
+        if (!sel.away) sel.away = team.id; else if (!sel.home && sel.away !== team.id) sel.home = team.id;
+        syncSetup();
+        closeModal();
+      }
+    };
+    d.querySelector('#m-import').onclick = go;
+  });
+}
+$('#btn-import').addEventListener('click', () => importDialog());
 
 function showScreen(name) {
   for (const id of ['setup', 'builder', 'game']) $(`#${id}`).classList.toggle('hidden', id !== name);
@@ -101,6 +139,8 @@ function editTeam(team) {
   });
 }
 $('#btn-build').addEventListener('click', () => editTeam(null));
+$('#opt-injuries').checked = store.get('injuries', true);
+$('#opt-injuries').addEventListener('change', (e) => store.set('injuries', e.target.checked));
 wireBuilder();
 $('#btn-start').addEventListener('click', () => {
   const seedIn = Number($('#seed').value);
@@ -115,38 +155,87 @@ $('#btn-new').addEventListener('click', () => {
 });
 
 // ==========================================================================
-// Game controller
+// Game controller. The game itself runs in a Web Worker (js/worker.js); the page
+// keeps a mirror (GameView) and plays back records as they arrive.
 const ctl = {
-  game: null, renderer: null, playing: false, speed: store.get('speed', 1), stepOnce: false,
-  cur: null, phase: 'idle', phaseT: 0, preDur: 0, playDur: 0, postDur: 0, shownLog: 0, lastRec: null, evIdx: 0,
+  game: null, client: null, renderer: null, playing: false, speed: store.get('speed', 1), stepOnce: false,
+  cur: null, phase: 'idle', phaseT: 0, preDur: 0, playDur: 0, postDur: 0, lastRec: null, evIdx: 0,
+  queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null,
   opts: { design: store.get('design', true), reads: store.get('reads', true), names: store.get('names', false), sprites: store.get('sprites', 'home') },
 };
 
 function startGame(awayId, homeId, seed) {
   const away = findTeam(awayId), home = findTeam(homeId);
-  ctl.game = new Game(away, home, seed);
-  ctl.cur = null; ctl.phase = 'idle'; ctl.shownLog = 0; ctl.lastRec = null;
+  ctl.client?.terminate();
+  Object.assign(ctl, { game: null, cur: null, phase: 'idle', lastRec: null, queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null });
   showScreen('game');
   $('#final').classList.add('hidden');
   $('#tokens').innerHTML = '';
+  hideReplayBadge();
   if (!ctl.renderer) {
-    ctl.renderer = new FieldRenderer({ stage: $('#stage'), field: $('#field'), overlay: $('#overlay'), tokens: $('#tokens') });
+    ctl.renderer = new FieldRenderer({ stage: $('#stage'), field: $('#field'), overlay: $('#overlay'), tokens: $('#tokens'), onPlayerHover: showPlayerCard });
   } else { ctl.renderer.tokens.clear(); ctl.renderer.lastScale = null; }
   ctl.renderer.spriteStyle = ctl.opts.sprites;
-  history.replaceState(null, '', `?away=${awayId}&home=${homeId}&seed=${seed}`);
-  renderScorebug(ctl.game.snapshot());
-  $('#lastplay').innerHTML = `<span class="muted">${esc(ctl.game.log[0]?.text || '')} Press <b>Play</b> to kick off. (Seed ${seed})</span>`;
-  renderPanels();
-  loadNext();
+  history.replaceState(null, '', `?away=${urlId(away)}&home=${urlId(home)}&seed=${seed}`);
+  $('#lastplay').innerHTML = '<span class="muted">Setting up the game…</span>';
+  ctl.client = new EngineClient(onEngineMessage);
+  ctl.client.send({ type: 'new', away, home, seed, options: { injuries: $('#opt-injuries').checked } });
   setPlaying(false);
 }
 
+function requestMore() {
+  while (!ctl.noMore && ctl.queue.length + ctl.requested < 2) { ctl.requested++; ctl.client.send({ type: 'next' }); }
+}
+
+function storeHistory(rec) {
+  const { state, frames, ...lite } = rec;
+  ctl.history.set(rec.id, lite);
+}
+
+function onEngineMessage(m) {
+  if (m.type === 'error') { console.error(m.message); $('#lastplay').innerHTML = `<span class="b-errors">Simulation error: ${esc(m.message.split('\n')[0])}</span>`; return; }
+  if (m.type === 'init') {
+    ctl.game = new GameView(m.teams, m.seed);
+    ctl.game.apply(m.state);
+    renderScorebug(ctl.game.snapshot());
+    $('#lastplay').innerHTML = `<span class="muted">${esc(ctl.game.log[0]?.text || '')} Press <b>Play</b> to kick off. (Seed ${m.seed}${ctl.client.mode === 'page' ? ', running on the page' : ''})</span>`;
+    renderPanels();
+    requestMore();
+    return;
+  }
+  if (m.type === 'rec') {
+    ctl.requested = Math.max(0, ctl.requested - 1);
+    m.rec.state = m.state;
+    storeHistory(m.rec);
+    ctl.queue.push(m.rec);
+    if (ctl.phase === 'idle' || ctl.phase === 'waiting') loadNext();
+    requestMore();
+    return;
+  }
+  if (m.type === 'batch') {
+    for (const r of m.recs) { storeHistory(r); ctl.simLast = r; }
+    $('#sim-progress') && ($('#sim-progress').textContent = `Simulating… ${Math.round(m.progress * 100)}%`);
+    return;
+  }
+  if (m.type === 'final') {
+    ctl.requested = 0;
+    ctl.noMore = true;
+    ctl.finalState = m.state;
+    if (ctl.simming) { finishSim(); return; }
+    if (ctl.phase === 'idle' || ctl.phase === 'waiting') loadNext();
+  }
+}
+
 function loadNext() {
-  const g = ctl.game;
-  const logBefore = g.log.length;
-  const rec = g.next();
-  if (!rec) { onFinal(); return; }
-  rec.logFrom = logBefore;
+  if (!ctl.game) return;
+  if (!ctl.queue.length) {
+    if (ctl.noMore) { if (ctl.finalState) ctl.game.apply(ctl.finalState); onFinal(); return; }
+    ctl.phase = 'waiting';
+    requestMore();
+    return;
+  }
+  const rec = ctl.queue.shift();
+  recFrames(rec);
   ctl.cur = rec;
   ctl.evIdx = 0;
   ctl.phase = 'pre'; ctl.phaseT = 0;
@@ -155,13 +244,14 @@ function loadNext() {
   ctl.playDur = (rec.frames.length - 1) * 0.05;
   const big = ['td', 'int', 'fumble', 'safety', 'downs'].includes(rec.highlight);
   ctl.postDur = big ? 2.2 : 1.1;
-  ctl.renderer.ensureTokens(rec, g);
+  ctl.renderer.ensureTokens(rec, ctl.game);
   ctl.renderer.lastScale = null;
   renderScorebug(rec.before, rec);
   renderPlaycard(rec);
   $('#toast').classList.add('hidden');
   hideCaption();
-  ctl.renderer.draw(rec, 0, g, { ...drawOpts(0), snapCamera: !ctl.lastRec || ctl.lastRec.type !== 'scrimmage' || rec.type !== 'scrimmage' });
+  ctl.renderer.draw(rec, 0, ctl.game, { ...drawOpts(0), snapCamera: !ctl.lastRec || ctl.lastRec.type !== 'scrimmage' || rec.type !== 'scrimmage' });
+  requestMore();
 }
 
 function drawOpts(ft) {
@@ -171,6 +261,7 @@ function drawOpts(ft) {
 
 function onPlayEnd() {
   const rec = ctl.cur, g = ctl.game;
+  if (rec.state) { g.apply(rec.state); delete rec.state; }
   renderScorebug(rec.after, rec);
   const hl = rec.highlight;
   const toast = { td: 'Touchdown!', int: 'Intercepted!', fumble: 'Fumble!', fg: "It's good!", miss: 'No good!', safety: 'Safety!', downs: 'Turnover on downs', flag: 'Flag!' }[hl];
@@ -195,14 +286,18 @@ function onFinal() {
   const [a, h] = g.score;
   const winner = a === h ? null : g.teams[a > h ? 0 : 1];
   const stars = playersOfGame(g);
+  const nHi = highlightIds().length;
   const el = $('#final');
   el.innerHTML = `<h3>${winner ? `${esc(winner.city)} ${esc(winner.name)} win!` : 'It ends in a tie'}</h3>
     <div class="fscore">${g.teams[0].abbr} ${a} — ${h} ${g.teams[1].abbr}</div>
     <div class="stars">${stars.map(esc).join('<br>')}</div>
-    <div style="display:flex;gap:8px;margin-top:8px"><button class="primary" id="btn-rematch" type="button">Rematch (new seed)</button><button id="btn-box" type="button">View box score</button></div>`;
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;justify-content:center">
+      ${nHi ? `<button class="primary" id="btn-hi" type="button">▶ Watch highlights (${nHi})</button>` : ''}
+      <button id="btn-rematch" type="button">Rematch (new seed)</button><button id="btn-box" type="button">View box score</button></div>`;
   el.classList.remove('hidden');
   $('#btn-rematch').onclick = () => startGame(g.teams[0].id, g.teams[1].id, Math.floor(Math.random() * 1e9));
   $('#btn-box').onclick = () => { el.classList.add('hidden'); selectTab('box'); };
+  if (nHi) $('#btn-hi').onclick = () => { el.classList.add('hidden'); startReplay(highlightIds(), 'Highlights'); };
 }
 
 function playersOfGame(g) {
@@ -219,18 +314,76 @@ function playersOfGame(g) {
   out.push(best((s) => s.def.tkl + s.def.ast * 0.5 + s.def.sck * 3 + s.def.int * 4 + s.def.pd, (p, s) => `${p.name} (${abbrOf(g, p)}): ${s.def.tkl + s.def.ast} tkl, ${s.def.sck} sck, ${s.def.int} INT, ${s.def.pd} PD`));
   return out.filter(Boolean);
 }
-const abbrOf = (g, p) => g.teams.find((t) => t.id === p.teamId).abbr;
+const abbrOf = (g, p) => g.teams.find((t) => t.id === p.teamId)?.abbr || '';
+
+// ---------------- replays & highlights
+function highlightIds() {
+  const ids = [];
+  for (const [id, r] of ctl.history) {
+    const big = ['td', 'int', 'fumble', 'safety'].includes(r.highlight) || (r.type === 'fg' && r.highlight === 'fg' && /(4\d|5\d|6\d)-yard/.test(r.text || '')) ||
+      (r.gain ?? 0) >= 20 || / sacked by /.test(r.text || '') && (r.gain ?? 0) <= -7;
+    if (big && r.type !== 'pat') ids.push(id);
+  }
+  return ids.slice(0, 18);
+}
+function startReplay(ids, label = 'Replay') {
+  const list = ids.map((id) => ctl.history.get(id)).filter(Boolean);
+  if (!list.length) return;
+  if (!ctl.replay) ctl.replay = { saved: { cur: ctl.cur, phase: ctl.phase, phaseT: ctl.phaseT, preDur: ctl.preDur, playDur: ctl.playDur, postDur: ctl.postDur, evIdx: ctl.evIdx, playing: ctl.playing } };
+  ctl.replay.list = list; ctl.replay.i = 0; ctl.replay.label = label;
+  $('#final').classList.add('hidden');
+  playReplayItem();
+  setPlaying(true);
+}
+function playReplayItem() {
+  const R = ctl.replay, rec = R.list[R.i];
+  recFrames(rec);
+  ctl.cur = rec; ctl.evIdx = 0; ctl.phase = 'pre'; ctl.phaseT = 0;
+  ctl.preDur = 0.7; ctl.playDur = (rec.frames.length - 1) * 0.05; ctl.postDur = 1.2;
+  ctl.renderer.ensureTokens(rec, ctl.game);
+  ctl.renderer.lastScale = null;
+  renderPlaycard(rec);
+  hideCaption();
+  showReplayBadge(`${R.label}${R.list.length > 1 ? ` ${R.i + 1}/${R.list.length}` : ''}`, rec.text);
+  ctl.renderer.draw(rec, 0, ctl.game, { ...drawOpts(0), snapCamera: true });
+}
+function endReplay() {
+  if (!ctl.replay) { hideReplayBadge(); return; }
+  const s = ctl.replay.saved;
+  ctl.replay = null;
+  hideReplayBadge();
+  Object.assign(ctl, { cur: s.cur, phase: s.phase, phaseT: s.phaseT, preDur: s.preDur, playDur: s.playDur, postDur: s.postDur, evIdx: s.evIdx });
+  setPlaying(s.phase === 'final' ? false : s.playing);
+  if (ctl.cur) { ctl.renderer.ensureTokens(ctl.cur, ctl.game); ctl.renderer.lastScale = null; }
+  if (ctl.phase === 'final') $('#final').classList.remove('hidden');
+}
+function showReplayBadge(label, text) {
+  let b = $('#replay-badge');
+  if (!b) {
+    b = document.createElement('div'); b.id = 'replay-badge'; b.className = 'replay-badge';
+    $('#stage').appendChild(b);
+  }
+  b.innerHTML = `<span class="rb-tag">⟲ ${esc(label)}</span><span class="rb-txt">${esc(text || '')}</span><button type="button" id="rb-exit" class="ghost">Exit replay</button>`;
+  b.classList.remove('hidden');
+  $('#rb-exit').onclick = () => endReplay();
+}
+function hideReplayBadge() { $('#replay-badge')?.classList.add('hidden'); }
 
 function advance(dt) {
-  if (!ctl.game || ctl.phase === 'final' || ctl.phase === 'idle') return;
+  if (!ctl.game || !ctl.cur) return;
+  if (!ctl.replay && (ctl.phase === 'final' || ctl.phase === 'idle' || ctl.phase === 'waiting')) return;
   ctl.phaseT += dt;
   if (ctl.phase === 'pre' && ctl.phaseT >= ctl.preDur) { ctl.phase = 'play'; ctl.phaseT = 0; }
   if (ctl.phase === 'play') {
     const evs = ctl.cur.events || [];
-    while (ctl.evIdx < evs.length && evs[ctl.evIdx].t <= ctl.phaseT) { showCaption(evs[ctl.evIdx].text); ctl.evIdx++; }
-    if (ctl.phaseT >= ctl.playDur) { ctl.phase = 'post'; ctl.phaseT = 0; onPlayEnd(); }
+    while (ctl.evIdx < evs.length && evs[ctl.evIdx].t + (ctl.cur.motionT || 0) <= ctl.phaseT) { showCaption(evs[ctl.evIdx].text); ctl.evIdx++; }
+    if (ctl.phaseT >= ctl.playDur) { ctl.phase = 'post'; ctl.phaseT = 0; if (!ctl.replay) onPlayEnd(); }
   }
   if (ctl.phase === 'post' && ctl.phaseT >= ctl.postDur) {
+    if (ctl.replay) {
+      if (++ctl.replay.i < ctl.replay.list.length) playReplayItem(); else endReplay();
+      return;
+    }
     ctl.lastRec = ctl.cur;
     if (ctl.stepOnce) { ctl.stepOnce = false; setPlaying(false); }
     loadNext();
@@ -243,7 +396,7 @@ function frame(now, fromTimer = false) {
   const dt = Math.min(0.1, (now - lastT) / 1000);
   lastT = now;
   if (ctl.playing) advance(dt * ctl.speed);
-  if (ctl.cur && ctl.renderer) {
+  if (ctl.cur && ctl.renderer && ctl.game) {
     const ft = ctl.phase === 'play' ? ctl.phaseT : ctl.phase === 'pre' ? 0 : ctl.playDur;
     ctl.renderer.draw(ctl.cur, ft, ctl.game, drawOpts(ft));
     if (ctl.phase === 'play' && ctl.phaseT > 0.1) $('#playcard').classList.add('hidden');
@@ -259,17 +412,28 @@ function setPlaying(on) {
   ctl.playing = on;
   $('#btn-play').textContent = on ? '❚❚ Pause' : '▶ Play';
 }
-$('#btn-play').addEventListener('click', () => { if (ctl.phase === 'final') return; ctl.stepOnce = false; setPlaying(!ctl.playing); });
-$('#btn-step').addEventListener('click', () => { if (ctl.phase === 'final') return; ctl.stepOnce = true; setPlaying(true); });
+$('#btn-play').addEventListener('click', () => { if (ctl.phase === 'final' && !ctl.replay) return; ctl.stepOnce = false; setPlaying(!ctl.playing); });
+$('#btn-step').addEventListener('click', () => { if (ctl.phase === 'final' || ctl.replay) return; ctl.stepOnce = true; setPlaying(true); });
 $('#btn-sim').addEventListener('click', () => {
-  const g = ctl.game;
-  if (!g || ctl.phase === 'final') return;
-  let rec = ctl.cur, last = rec;
-  while ((rec = g.next())) last = rec;
-  ctl.cur = last; ctl.phase = 'post'; ctl.playDur = (last.frames.length - 1) * 0.05;
-  ctl.renderer.ensureTokens(last, g);
-  onFinal();
+  if (!ctl.game || ctl.phase === 'final' || ctl.simming) return;
+  if (ctl.replay) endReplay();
+  ctl.simming = true;
+  setPlaying(false);
+  ctl.queue = [];
+  const el = $('#final');
+  el.innerHTML = '<h3 id="sim-progress">Simulating…</h3><div class="stars">The rest of the game is being simulated in the background.</div>';
+  el.classList.remove('hidden');
+  ctl.client.send({ type: 'simToEnd' });
 });
+function finishSim() {
+  ctl.simming = false;
+  ctl.game.apply(ctl.finalState);
+  const last = ctl.simLast || ctl.cur;
+  if (last) { recFrames(last); ctl.cur = last; ctl.playDur = (last.frames.length - 1) * 0.05; ctl.renderer.ensureTokens(last, ctl.game); }
+  ctl.phase = 'post';
+  onFinal();
+}
+
 $$('.speed button').forEach((b) => {
   b.classList.toggle('on', Number(b.dataset.speed) === ctl.speed);
   b.addEventListener('click', () => {
@@ -306,6 +470,7 @@ function renderPlaycard(rec) {
     <div class="row"><span class="side" style="background:${off.colors.primary}">${off.abbr}</span><div><span class="call">${esc(p.offCall)}</span>${p.offReason ? `<div class="why">${esc(p.offReason)}</div>` : ''}</div></div>
     ${kick && !p.defReason ? '' : `<div class="row"><span class="side" style="background:${def.colors.primary}">${def.abbr}</span><div><span class="call">${esc(p.defCall)}</span>${p.defReason ? `<div class="why">${esc(p.defReason)}</div>` : ''}</div></div>`}
     ${p.decision ? `<div class="decision">${esc(p.decision)}</div>` : ''}
+    ${p.audible ? `<div class="decision">Audible! ${esc(p.audible)}</div>` : ''}
     ${p.syn && (Object.keys(p.syn.off).length || Object.keys(p.syn.def).length) ? `<div class="pc-syn">${Object.keys(p.syn.off).length ? `<span class="muted">${off.abbr}</span> ${synergyChips(p.syn.off, p.syn.off, { compact: true })}` : ''} ${Object.keys(p.syn.def).length ? `<span class="muted">${def.abbr}</span> ${synergyChips(p.syn.def, p.syn.def, { compact: true })}` : ''}</div>` : ''}`;
   $('#playcard').classList.remove('hidden');
 }
@@ -367,8 +532,7 @@ selectTab(store.get('tab', 'pbp'));
 function renderPanels() {
   const g = ctl.game;
   if (!g) return;
-  const upto = ctl.phase === 'final' ? g.log.length : (ctl.cur && ctl.phase !== 'post' ? ctl.cur.logFrom ?? g.log.length : g.log.length);
-  renderPBP(g, upto);
+  renderPBP(g, g.log.length);
   renderBox(g);
   renderTeamStats(g);
   renderRosters(g);
@@ -386,12 +550,13 @@ function renderPBP(g, upto) {
   for (const { l, scored } of rows.reverse()) {
     if (l.q !== lastQ) { html += `<div class="pbp-q">${l.q === 5 ? 'Overtime' : `${qText(l.q)} quarter`}</div>`; lastQ = l.q; }
     const team = l.team != null ? g.teams[l.team] : null;
-    const cls = l.kind === 'sub' ? 'note sub' : l.kind ? 'note' : scored ? 'score' : ['int', 'fumble', 'downs'].includes(l.highlight) ? 'turnover' : '';
+    const cls = l.kind === 'sub' ? 'note sub' : l.kind === 'injury' ? 'injury' : l.kind ? 'note' : scored ? 'score' : ['int', 'fumble', 'downs'].includes(l.highlight) ? 'turnover' : '';
     html += `<div class="pbp-item ${cls}"><span class="stripe" style="background:${team ? team.colors.primary : 'transparent'}"></span><div>
       <div class="meta">${clockText(l.clock)}${l.dd ? ` · ${esc(l.dd)} at ${esc(l.spot)}` : ''}${team ? ` · ${team.abbr}` : ''}${scored ? `<span class="sc">${g.teams[0].abbr} ${l.score[0]} – ${g.teams[1].abbr} ${l.score[1]}</span>` : ''}</div>
-      <div class="txt">${esc(l.text)}</div></div></div>`;
+      <div class="txt">${esc(l.text)}${l.recId && ctl.history.has(l.recId) ? ` <button type="button" class="replay-btn" data-rec="${l.recId}" title="Watch this play again">▶</button>` : ''}</div></div></div>`;
   }
   $('#tab-pbp').innerHTML = html || '<p class="muted">No plays yet.</p>';
+  $$('#tab-pbp .replay-btn').forEach((b) => b.addEventListener('click', () => startReplay([Number(b.dataset.rec)])));
 }
 
 function plCell(g, id) {
@@ -480,13 +645,15 @@ function renderRosters(g) {
       <td class="ovr">${c.ovr}</td><td class="best">${esc(top)}</td><td>${energyBar(c)}</td></tr>`;
   };
   const starters = STARTERS.map((s) => row(D.cards[s.key], s.label === 'FLEX' ? `FLEX ${D.cards[s.key].pos}` : s.label));
-  const bench = BENCH.map((s) => row(D.cards[s.key], `Backup ${s.label}`));
+  const bench = BENCH.map((s) => D.cards[s.key]).filter((c) => !c.convertedTo).map((c, i) => row(c, `Backup ${c.pos}`));
+  const hurt = (D.injuredCards || []).filter((c) => !c.convertedTo).map((c) => `<tr class="dim"><td class="pl"><img src="${spriteUrl(c)}" alt="" loading="lazy" referrerpolicy="no-referrer"><div><b>${esc(c.name)}</b> <span class="muted">${c.pos}</span></div></td><td colspan="3" class="inj">✚ Out for the game</td></tr>`);
   $('#tab-roster').innerHTML = `<div class="roster-sw">${[0, 1].map((i) => `<button type="button" data-rt="${i}" class="${i === rosterTeam ? 'on' : ''}">${esc(g.teams[i].city)} ${esc(g.teams[i].name)}</button>`).join('')}</div>
     <div class="muted" style="font-size:12px;margin-bottom:6px">${esc(t.coach.name)} · ${esc(t.coach.style)} · ${PERSONNEL[D.personnel].name} offense · ${FRONTS[D.front].name} defense. Faded rows are off the field right now. Hover a player to see what each stat means at that position.</div>
     <div class="b-syn"><span class="muted small">Offense on field</span> ${synergyChips(D.synergy.O.counts, D.synergy.O.active)}</div>
     <div class="b-syn" style="margin-bottom:8px"><span class="muted small">Defense on field</span> ${synergyChips(D.synergy.D.counts, D.synergy.D.active)}</div>
     <table class="st"><thead><tr><th>Starters</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${starters.join('')}</tbody></table>
-    <table class="st"><thead><tr><th>Bench</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${bench.join('')}</tbody></table>`;
+    <table class="st"><thead><tr><th>Bench</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${bench.join('')}</tbody></table>
+    ${hurt.length ? `<table class="st"><thead><tr><th>Injured</th><th colspan="3"></th></tr></thead><tbody>${hurt.join('')}</tbody></table>` : ''}`;
   $$('#tab-roster [data-rt]').forEach((b) => b.addEventListener('click', () => { rosterTeam = Number(b.dataset.rt); renderRosters(g); }));
 }
 
@@ -494,8 +661,52 @@ function renderRosters(g) {
 // Boot
 renderTeamGrid();
 const qp = new URLSearchParams(location.search);
+if (qp.get('team')) importDialog(qp.get('team'));
 if (qp.get('away') && qp.get('home') && findTeam(qp.get('away')) && findTeam(qp.get('home'))) {
   sel.away = qp.get('away'); sel.home = qp.get('home');
   if (qp.get('seed')) $('#seed').value = qp.get('seed');
   syncSetup();
+}
+
+// ==========================================================================
+// Player hover card
+const OFF_CARD_POS = new Set(['QB', 'RB', 'WR', 'TE', 'OL']);
+let pcardSticky = false;
+function showPlayerCard(pid, el, sticky = false) {
+  let card = $('#pcard');
+  if (!pid) { if (!pcardSticky && card) card.classList.add('hidden'); return; }
+  const g = ctl.game;
+  const p = g?.players[pid];
+  if (!p) return;
+  if (!card) {
+    card = document.createElement('div'); card.id = 'pcard'; card.className = 'pcard hidden';
+    $('#stage').appendChild(card);
+    $('#stage').addEventListener('click', () => { pcardSticky = false; card.classList.add('hidden'); });
+  }
+  pcardSticky = sticky;
+  const ti = g.teams.findIndex((t) => t.id === p.teamId);
+  const team = g.teams[ti];
+  const D = g.depth[ti];
+  const unit = p.pos === 'K' ? null : OFF_CARD_POS.has(p.pos) ? 'O' : 'D';
+  const active = unit ? D.synergy[unit].active : {};
+  const syn = p.types.filter((t) => active[t]);
+  const e = Math.round(D.energy[pid] ?? 100);
+  const labels = STAT_LABELS[p.pos];
+  const stats = STAT_KEYS.map((k) => `<div class="pc-row"><span>${labels[k]}</span><i><b style="width:${Math.min(100, p.base[k] / 1.6)}%"></b></i><em>${p.base[k]}</em></div>`).join('');
+  card.innerHTML = `<div class="pc-head" style="border-color:${team.colors.primary}">
+      <img src="${spriteUrl(p)}" alt="" referrerpolicy="no-referrer">
+      <div><b>${esc(p.name)}</b> <span class="muted">${p.pos}${p.outOfPosition ? ` (normally ${p.outOfPosition})` : ''}</span><br>${typeChips(p.types)}</div>
+      <div class="pc-ovr">${p.ovr}<small>OVR</small></div></div>
+    ${stats}
+    <div class="pc-foot"><span>Energy</span><span class="en"><i style="width:${e}%;background:${e >= 80 ? '#3fb950' : e >= 60 ? '#ffcb05' : '#f85149'}"></i></span><b>${e}%</b></div>
+    ${syn.length ? `<div class="pc-syn">${synergyChips(Object.fromEntries(syn.map((t) => [t, 1])), Object.fromEntries(syn.map((t) => [t, active[t]])), { compact: true })}</div>` : ''}
+    ${p.injured ? '<div class="pc-inj">✚ Injured</div>' : ''}`;
+  card.classList.remove('hidden');
+  // position next to the token, kept inside the stage
+  const sr = $('#stage').getBoundingClientRect(), r = el.getBoundingClientRect();
+  const w = card.offsetWidth, h = card.offsetHeight;
+  let x = r.right - sr.left + 8, y = r.top - sr.top - h / 2;
+  if (x + w > sr.width - 6) x = r.left - sr.left - w - 8;
+  card.style.left = `${Math.max(6, x)}px`;
+  card.style.top = `${Math.max(6, Math.min(sr.height - h - 6, y))}px`;
 }

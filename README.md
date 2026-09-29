@@ -5,10 +5,14 @@ A static, browser-only 7-on-7 tackle football simulation where every player is a
 ## Features
 
 - **Agent-based play sim.** QBs drop back, go through progressions (you can see each read live), feel pressure, scramble, throw it away, or take sacks. Receivers run real route trees. Defenders play man coverage with reaction delays, match their zones, blitz, green-dog, spy, and pursue with proper intercept angles. Blockers engage in one-on-one leverage battles. Tackles, broken tackles, fumbles, tipped passes, contested catches, and interceptions all emerge from the simulation.
-- **Situational play-calling.** Each coach has tendencies: pass rate, deep-shot rate, aggression, blitz rate, man/zone preference, play-action rate, run scheme, and tempo. Those combine with down and distance, field position, score, clock, and the team's personnel and front to pick plays. The defense adjusts to the opponent's observed tendencies. There are 4th-down, 2-point, and timeout decisions, plus spikes and kneels.
-- **Full game flow.** Four 6-minute quarters with realistic clock rules, a two-minute warning, and timeouts. Kickoffs, onside kicks, punts, field goals, PATs, 2-point tries, safeties, penalties (false start, offside, holding, pass interference), and sudden-death overtime.
+- **Situational play-calling.** Each coach has tendencies: pass rate, deep-shot rate, aggression, blitz rate, man/zone preference, play-action rate, run scheme, and tempo. Those combine with down and distance, field position, score, clock, and the team's personnel and front to pick plays. Both sides adjust in-game: offenses lean on whatever is working and feed a hot receiver, and defenses load the box against a hot run game, roll coverage against a hot passer, and bracket a receiver who is beating them. QBs audible at the line against blitzes, loaded boxes, and soft shells, and pre-snap motion can tip man vs zone. Runs include draws, sneaks, and short-yardage pile pushes; defenses set an edge and keep contain. On 3rd and 4th down, QBs look for throws past the sticks. There are 4th-down, 2-point, and timeout decisions, plus spikes and kneels.
+- **Full game flow.** Four 6-minute quarters with realistic clock rules, a two-minute warning, and timeouts. Kickoffs and punts with fully simulated returns (coverage lanes, blocking walls, fair catches, muffs), onside kicks, field goals, PATs, 2-point tries, safeties, penalties (false start, offside, holding, pass interference), and sudden-death overtime.
 - **Fatigue and substitutions.** HP is stamina; tired players rotate out for their backups.
-- **Team builder.** Build a 23-card roster from all 1,025 Pokémon.
+- **Injuries (optional).** Rare, exposure-based injuries knock a player out for the game; the backup steps in, or a bench player moves over out of position. You can turn them off on the matchup screen.
+- **Team builder.** Build a 23-card roster from all 1,025 Pokémon, then share it as a team code or link.
+- **Replays and highlights.** Replay any play from the play-by-play, or watch a highlight reel of the game's biggest plays when it ends.
+- **Player cards.** Hover (or tap) any player on the field to see their card, ratings, and energy.
+- **Smooth playback.** The simulation runs in a Web Worker and prefetches upcoming plays, so the page stays responsive, even during "Sim to end".
 - **Stats.** Box score, team stats, a drive chart, play-by-play, a live depth chart with energy, and players of the game.
 
 ### Cards
@@ -44,7 +48,7 @@ Build your own team from any card in the database. You can:
 - choose the FLEX positions, team name, colors, and coach tendencies;
 - use Auto-fill to complete a roster with the best available cards.
 
-Custom teams are saved in your browser.
+Custom teams are saved in your browser. **Share code** turns a team into a short code (and a link) that anyone can paste into **Import a team code**. Opening a `?team=CODE` link imports the team directly, and games involving custom teams get shareable links too.
 
 ### Type synergies
 Count each type among the 7 players a unit has on the field (dual types count for both). With **2 / 4 / 6** of a type, the synergy reaches tier I / II / III, and every Pokémon of that type in the unit gets its effect. Each effect works the same on offense and defense. Substitutions can switch a synergy on or off mid-game.
@@ -77,7 +81,12 @@ Magnitudes live in `SYNERGY_VALUES` in `js/synergy.js` and are balanced by simul
 ```
 index.html            page shell
 css/style.css
-js/main.js            UI controller (playback, scorebug, panels)
+js/main.js            UI controller (playback, scorebug, panels, replays, player cards)
+js/client.js          page-side game mirror + Web Worker connection
+js/worker.js          Web Worker that runs the engine
+js/engine.js          game host: packs plays into compact messages
+js/teamcode.js        team share codes
+js/modal.js           dialogs
 js/builder.js         team builder + card browser
 js/render.js          canvas field + DOM sprite tokens
 js/game.js            game state machine: clock, downs, scoring, special teams, stats
@@ -87,7 +96,7 @@ js/ratings.js         cards: base stats -> position traits
 js/synergy.js         type synergy definitions, tiers and tuned magnitudes
 js/playcaller.js      offensive/defensive play-calling AI, 4th-down and PAT logic
 js/playbook.js        formations, routes, plays, defensive call templates + resolver
-js/sim/playSim.js     the per-play agent simulation
+js/sim/playSim.js     the per-play agent simulation (incl. kick/punt returns)
 js/sim/special.js     kicking-play animation
 js/storage.js         custom teams in localStorage
 js/data/teams.js      the 8 AI teams (23-card rosters) and coach presets
@@ -126,6 +135,9 @@ node tools/play-stats.mjs 20         # every play vs every coverage
 node tools/game-breakdown.mjs 40     # run game by scheme/coverage + pass-rush stats inside real games
 node tools/trace-play.mjs smash c3 7 # frame-by-frame trace of one play
 node tools/fatigue-report.mjs 12     # substitutions and energy by position
+node tools/third-downs.mjs 40       # 3rd-down conversion by distance, draws, sneaks
+node tools/returns.mjs 60           # kick/punt return averages, fair catches, TDs
+node tools/injuries.mjs 60          # injury frequency by position
 node tools/random-rosters.mjs 30     # stress test with random rosters from the whole Pokédex
 node tools/synergy-calibrate.mjs 400 all 2   # win-rate edge of every type synergy at tier II
 ```

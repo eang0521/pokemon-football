@@ -32,10 +32,10 @@ export const SYNERGIES = {
 // Per-tier magnitudes. Stat types: fraction added to the base stat.
 // Mechanics: see comments (units used by the sim).
 export const SYNERGY_VALUES = {
-  normal: [0.25, 0.5, 0.8], // Adaptable: fraction of the gap to the Pokémon's own average stat closed
+  normal: [0.138, 0.275, 0.44], // Adaptable: fraction of the gap to the Pokémon's own average stat closed
   fighting: [0.06, 0.119, 0.186],
   steel: [0.076, 0.151, 0.238],
-  psychic: [0.044, 0.087, 0.136],
+  psychic: [0.079, 0.157, 0.245],
   fairy: [0.044, 0.089, 0.139],
   electric: [0.02, 0.041, 0.064],
   clutch: [0.015, 0.031, 0.054], // rating multiplier bonus in clutch situations
@@ -43,14 +43,14 @@ export const SYNERGY_VALUES = {
   flow: [0.083, 0.166, 0.277], // fraction of speed loss avoided on sharp turns
   growth: [0.025, 0.05, 0.085], // rating bonus reached by the 4th quarter (0 in the 1st)
   regen: [0.2, 0.4, 0.7], // Grass: energy recovery bonus / drain reduction
-  chill: [0.591, 1.182, 2.009], // seconds an opponent is slowed after contact
+  chill: [1.064, 2.128, 3.616], // seconds an opponent is slowed after contact
   toxic: [1.042, 2.085, 3.647], // extra energy lost by an opponent per contact
-  leverage: [1.379, 2.759, 4.828], // added to their side of a blocking battle
+  leverage: [2.482, 4.966, 8.69], // added to their side of a blocking battle
   reach: [0.13, 0.26, 0.451], // yards of extra reach on the ball
-  swarm: [0.015, 0.03, 0.051], // per nearby teammate: tackle/block bonus
-  sturdy: [0.183, 0.365, 0.584], // fraction of push / fumble risk resisted
-  phase: [0.023, 0.046, 0.08], // chance a tackle or block attempt on them misses
-  misread: [0.036, 0.072, 0.12], // seconds of opponent reaction delay (also QB misjudgment)
+  swarm: [0.054, 0.108, 0.184], // per nearby teammate: tackle/block bonus
+  sturdy: [0.179, 0.358, 0.573], // fraction of push / fumble risk resisted
+  phase: [0.046, 0.092, 0.16], // chance a tackle or block attempt on them misses
+  misread: [0.054, 0.108, 0.18], // seconds of opponent reaction delay (also QB misjudgment)
 };
 
 export const valueOf = (type, tier) => {

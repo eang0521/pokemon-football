@@ -294,3 +294,34 @@ table.st td.best { color: var(--muted); font-size: 11px; white-space: normal; te
 .b-syn { margin-top: 6px; line-height: 1.9; }
 .b-syn > .muted { margin-right: 4px; }
 .pc-syn { margin-top: 6px; }
+
+.pbp-item.injury .txt { color: #ffa198; font-weight: 600; }
+td.inj { color: var(--bad); font-weight: 700; text-align: left !important; }
+
+/* ---------- modal / codes ---------- */
+dialog.modal { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 0; max-width: min(560px, calc(100vw - 32px)); width: 100%; }
+dialog.modal::backdrop { background: rgba(0,0,0,.6); }
+.modal-body { padding: 16px 18px; }
+.modal-body h3 { margin: 0 0 6px; font-family: var(--display); text-transform: uppercase; letter-spacing: .5px; }
+textarea.code { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: 12px/1.4 ui-monospace, Consolas, monospace; word-break: break-all; resize: vertical; margin: 6px 0; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
+.build-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- replays, hover cards ---------- */
+.tokens .token { pointer-events: auto; cursor: pointer; }
+.replay-badge { position: absolute; left: 10px; bottom: 10px; right: 10px; display: flex; align-items: center; gap: 10px; background: rgba(14,17,22,.9); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; z-index: 20000; }
+.replay-badge .rb-tag { font-family: var(--display); color: var(--accent); letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; }
+.replay-badge .rb-txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replay-btn { padding: 0 6px; font-size: 10px; line-height: 16px; border-radius: 4px; margin-left: 4px; vertical-align: middle; }
+.pcard { position: absolute; z-index: 20001; width: 230px; background: rgba(14,17,22,.96); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 11.5px; pointer-events: none; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+.pc-head { display: grid; grid-template-columns: 40px 1fr auto; gap: 6px; align-items: center; border-left: 3px solid; padding-left: 6px; margin-bottom: 6px; }
+.pc-head img { width: 40px; height: 40px; object-fit: contain; }
+.pc-ovr { font-family: var(--display); font-size: 22px; color: var(--accent); text-align: center; line-height: 1; }
+.pc-ovr small { display: block; font-size: 9px; color: var(--muted); }
+.pc-row { display: grid; grid-template-columns: 92px 1fr 28px; gap: 5px; align-items: center; margin: 1px 0; color: var(--muted); }
+.pc-row i { height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden; display: block; }
+.pc-row i b { display: block; height: 100%; background: var(--accent2); }
+.pc-row em { font-style: normal; text-align: right; color: var(--text); font-weight: 700; }
+.pc-foot { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); }
+.pc-syn { margin-top: 4px; }
+.pc-inj { color: var(--bad); font-weight: 800; margin-top: 4px; }

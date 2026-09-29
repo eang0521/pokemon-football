@@ -102,6 +102,34 @@ export class TeamDepth {
   restExcept(ids, amount) { for (const c of this.all()) if (!ids.has(c.id)) this.recover(c, amount); }
 
   // ---- substitutions for a unit ('O' or 'D'); returns human-readable notes
+  // Injury: the player is out for the game. Fill his spot with the matching backup,
+  // or the healthiest free bench card playing out of position (its card for that position).
+  injure(card, registry) {
+    card.injured = true;
+    (this.injuredCards ||= []).push(card);
+    const key = Object.keys(this.onField).find((k) => this.onField[k] === card);
+    if (!key) return { replacement: null };
+    const need = card.pos;
+    const onField = new Set(Object.values(this.onField));
+    const free = BENCH.map((s) => this.cards[s.key]).filter((c) => c && !c.injured && !onField.has(c));
+    let rep = free.find((c) => c.pos === need);
+    if (!rep && free.length) {
+      const src = free.slice().sort((a, b) => this.energy[b.id] - this.energy[a.id])[0];
+      rep = buildCard(src.slug, need, { id: `${src.id}@${need}`, teamId: src.teamId, slot: src.slot, outOfPosition: src.pos });
+      rep.sourceId = src.id;
+      registry[rep.id] = rep;
+      this.cards[`x${rep.id}`] = rep;
+      this.energy[rep.id] = this.energy[src.id];
+      src.injured = true; // he's committed to the new spot (can't also play his own)
+      src.convertedTo = rep.id;
+    }
+    if (!rep) return { replacement: null }; // nobody left: he stays in (toughing it out)
+    this.onField[key] = rep;
+    // the original starter never comes back; point his slot at the replacement
+    if (this.cards[key] === card) this.cards[key] = rep;
+    return { replacement: rep };
+  }
+
   substitute(unit) {
     const notes = [];
     const keys = unit === 'O' ? OFF_KEYS : DEF_KEYS;
@@ -109,7 +137,8 @@ export class TeamDepth {
       const starter = this.cards[k];
       const current = this.onField[k];
       const backup = this.cards[`b${starter.pos}`];
-      if (!backup) continue;
+      if (!backup || starter.injured) continue;
+      if (backup.injured && current === starter) continue;
       if (current === starter) {
         const e = this.energy[starter.id], be = this.energy[backup.id];
         const benchFree = !Object.values(this.onField).includes(backup);
@@ -117,7 +146,7 @@ export class TeamDepth {
           this.onField[k] = backup;
           notes.push(`${backup.name} (${backup.pos}) in for a winded ${starter.name}`);
         }
-      } else if (this.energy[starter.id] >= SUB_BACK) {
+      } else if (this.energy[starter.id] >= SUB_BACK && current === backup) {
         this.onField[k] = starter;
         notes.push(`${starter.name} (${starter.pos}) back in`);
       }

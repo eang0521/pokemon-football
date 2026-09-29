@@ -34,7 +34,17 @@ export function callOffense(team, sit, rng) {
   if (sit.kneel) return { play: KNEEL, reason: 'Victory formation — kneel to run out the clock' };
   if (sit.spike) return { play: SPIKE, reason: 'No timeouts — spike to stop the clock' };
 
-  const { p: pPass, why } = passProbability(coach, sit);
+  let { p: pPass, why } = passProbability(coach, sit);
+  // in-game adjustment: lean into what's working (needs a few plays of evidence)
+  const adj = sit.adjust || {};
+  if (adj.runN >= 5 && adj.passN >= 5 && !sit.twoMinute && !sit.killClock) {
+    const edge = (adj.passYpa - 6.5) / 6.5 - (adj.runYpc - 4) / 4;
+    if (Math.abs(edge) > 0.35) {
+      const shift = clamp(edge * 0.12, -0.15, 0.15);
+      pPass = clamp(pPass + shift, 0.06, 0.96);
+      why.push(shift > 0 ? `passing game rolling (${adj.passYpa.toFixed(1)} per attempt)` : `run game working (${adj.runYpc.toFixed(1)} per carry)`);
+    }
+  }
   const hail = sit.secsHalf <= 7 && ballOn >= 35 && ballOn <= 72 && (sit.quarter === 2 || sit.diff < 0 && sit.diff >= -8 || sit.quarter === 2);
   if (hail) return { play: PLAYS.find((p) => p.id === 'hailMary'), reason: 'Last play of the half — Hail Mary!', pPass: 1 };
 
@@ -72,9 +82,12 @@ export function callOffense(team, sit, rng) {
       if (p.id === 'outsideZone' || p.id === 'toss') w *= toGo <= 2 ? 0.5 : 1;
     }
     if (p.id === sit.lastPlayId) w *= 0.4;
+    // feed the hot receiver: favor concepts where he's the first read
+    if (adj.hotSlot && p.prog && p.prog[0] === adj.hotSlot) w *= 1.4;
     return { w, p };
   });
   const pick = rng.weighted(candidates).p;
+  if (adj.hotSlot && pick.prog && pick.prog[0] === adj.hotSlot) why.push(`feeding ${adj.hotName}`);
   const reason = `${why.length ? why.join(', ') + ' — ' : ''}${pct(pPass)} pass tendency → ${pick.type === 'pass' ? 'pass' : 'run'}`;
   return { play: pick, reason, pPass };
 }
@@ -95,8 +108,16 @@ export function callDefense(team, sit, oppTendency, rng) {
   const prevent = (sit.secsHalf <= 10 && ballOn <= 70) || (sit.quarter >= 4 && sit.secsGame <= 75 && lead >= 1 && lead <= 8 && ballOn <= 65);
   if (prevent) return { dcall: DEFENSES.find((d) => d.id === 'prevent'), reason: 'Protect the lead: keep everything in front' };
 
+  // in-game adjustment: attack what's hurting us
+  const hotRun = oppTendency.runN >= 5 && oppTendency.runYpc >= 5.2;
+  const hotPass = oppTendency.passN >= 6 && oppTendency.passYpa >= 8.0;
+  if (hotRun) why.push(`loading the box (they're averaging ${oppTendency.runYpc.toFixed(1)} per carry)`);
+  if (hotPass) why.push(`adjusting to a hot passing game (${oppTendency.passYpa.toFixed(1)} per attempt)`);
   const cands = DEFENSES.filter((d) => d.id !== 'prevent').map((d) => {
     let w = d.tags.includes('man') ? coach.manRate : 1 - coach.manRate;
+    if (hotRun && (d.id === 'runBlitz' || d.id === 'c1' || d.id === 'c0')) w *= 1.8;
+    if (hotRun && d.id === 'prevent') w *= 0.3;
+    if (hotPass && (d.tags.includes('blitz') || d.id === 'c4' || d.id === 'cloud')) w *= 1.5;
     if (d.tags.includes('blitz')) w *= coach.blitzRate * 1.6;
     if (d.id === 'runBlitz') w *= expPass < 0.4 ? 2.5 : 0.15;
     if (expPass > 0.7 && d.tags.includes('zone')) w *= 1.4;
@@ -113,10 +134,16 @@ export function callDefense(team, sit, oppTendency, rng) {
     return { w, d };
   });
   const pick = rng.weighted(cands).d;
+  // roll help toward a receiver who's torching us
+  let bracket = null;
+  if (oppTendency.hotSlot && sit.down !== 1 || (oppTendency.hotSlot && rng.chance(0.6))) {
+    bracket = oppTendency.hotSlot;
+    why.push(`rolling coverage to ${oppTendency.hotName}`);
+  }
   if (expPass >= 0.65) why.push(`expecting pass (${pct(expPass)})`);
   else if (expPass <= 0.4) why.push(`expecting run (${pct(1 - expPass)})`);
   if (pick.tags.includes('blitz')) why.push('sending pressure');
-  return { dcall: pick, reason: why.join(', ') || 'base call' };
+  return { dcall: bracket ? { ...pick, bracket } : pick, reason: why.join(', ') || 'base call' };
 }
 
 // ---------------------------------------------------------------------------

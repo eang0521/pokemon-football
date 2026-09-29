@@ -4,6 +4,8 @@ import { cardRatings, overall, STAT_KEYS, STAT_LABELS, POS_NAMES } from './ratin
 import { STARTERS, BENCH, SLOT, parseCard, cardValue, validateRoster, PERSONNEL, FRONTS, personnelOf, frontOf } from './roster.js';
 import { COACH_PRESETS } from './data/teams.js';
 import { saveCustomTeam, deleteCustomTeam } from './storage.js';
+import { encodeTeam, shareLink } from './teamcode.js';
+import { openModal, copyText } from './modal.js';
 import { SYNERGIES, TIER_COUNTS, unitSynergies, tierName } from './synergy.js';
 import { spriteUrl } from './render.js';
 
@@ -236,6 +238,23 @@ export function wireBuilder() {
   $('#b-auto').addEventListener('click', autoFill);
   $('#b-clear').addEventListener('click', () => { if (confirm('Clear every slot?')) { state.team.roster = {}; state.slot = 'QB'; render(); } });
   $('#b-save').addEventListener('click', save);
+  $('#b-share').addEventListener('click', () => {
+    const t = state.team;
+    t.city = $('#b-city').value.trim() || t.city; t.name = $('#b-name').value.trim() || t.name;
+    t.abbr = ($('#b-abbr').value.trim() || t.abbr).toUpperCase().slice(0, 3);
+    t.colors = { primary: $('#b-c1').value, secondary: $('#b-c2').value };
+    const errors = validateRoster(t.roster);
+    const code = encodeTeam(t), link = shareLink(code);
+    openModal(`<h3>Share ${esc(t.city)} ${esc(t.name)}</h3>
+      ${errors.length ? `<p class="b-errors">This roster isn't complete yet (${errors.length} issue${errors.length > 1 ? 's' : ''}). Friends can still import and finish it.</p>` : ''}
+      <p class="muted small">Anyone can paste this code into “Import a team code”, or open the link.</p>
+      <textarea class="code" readonly rows="4">${code}</textarea>
+      <div class="modal-actions"><button type="button" class="primary" id="m-copy-code">Copy code</button><button type="button" id="m-copy-link">Copy link</button><button type="button" class="ghost" data-close>Close</button></div>`, (d) => {
+      d.querySelector('#m-copy-code').onclick = (e) => copyText(code, e.target);
+      d.querySelector('#m-copy-link').onclick = (e) => copyText(link, e.target);
+      d.querySelector('textarea').onclick = (e) => e.target.select();
+    });
+  });
   $('#b-cancel').addEventListener('click', () => state.onClose());
   $('#b-delete').addEventListener('click', () => {
     if (confirm(`Delete ${state.team.city} ${state.team.name}?`)) { deleteCustomTeam(state.team.id); state.onClose(true); }

@@ -2,7 +2,8 @@
 // DOM-free so it can also run headless (see tools/sim-test.mjs).
 import { RNG } from './rng.js';
 import { TeamDepth } from './depth.js';
-import { simulatePlay } from './sim/playSim.js';
+import { simulatePlay, simulateReturn } from './sim/playSim.js';
+import { PLAYS, FORMATIONS } from './playbook.js';
 import { specialFrames } from './sim/special.js';
 import { callOffense, callDefense, fourthDown, patDecision, KNEEL, SPIKE } from './playcaller.js';
 
@@ -25,7 +26,8 @@ const blankTeam = () => ({ first: 0, plays: 0, yds: 0, passYds: 0, rushYds: 0, t
   third: [0, 0], fourth: [0, 0], sacked: 0, rz: [0, 0], twoPt: [0, 0] });
 
 export class Game {
-  constructor(away, home, seed = Date.now() % 1e9) {
+  constructor(away, home, seed = Date.now() % 1e9, options = {}) {
+    this.options = { injuries: true, ...options };
     this.seed = seed;
     this.rng = new RNG(seed);
     this.teams = [away, home];
@@ -36,6 +38,7 @@ export class Game {
     this.stats = { players: {}, teams: [blankTeam(), blankTeam()] };
     for (const id in this.players) this.stats.players[id] = blankLine();
     this.tendency = [{ plays: 0, pass: 0 }, { plays: 0, pass: 0 }];
+    this.recent = [{ runs: [], passes: [], recYds: {} }, { runs: [], passes: [], recYds: {} }];
     this.score = [0, 0];
     this.quarterScores = [[0, 0, 0, 0], [0, 0, 0, 0]];
     this.quarter = 1;
@@ -84,7 +87,7 @@ export class Game {
       down: this.down, toGo: this.toGo, ballOn: this.ballOn, quarter: q, clock: this.clock,
       secsHalf, secsGame, diff, twoMinute, killClock,
       timeouts: this.timeouts[i], oppTimeouts: this.timeouts[1 - i],
-      lastPlayId: this.lastPlayId, offQB: this.depth[i].QB,
+      lastPlayId: this.lastPlayId, offQB: this.depth[i].QB, adjust: this.scouting(i),
       personnel: this.depth[i].personnel, front: this.depth[1 - i].front,
     };
   }
@@ -111,12 +114,14 @@ export class Game {
   // Advance one "snap" (any play). Returns a record for the UI, or null when final.
   next() {
     if (this.final) return null;
+    this.curRecId = (this.recSeq = (this.recSeq || 0) + 1);
     const before = this.snapshot();
     let rec;
     if (this.phase === 'kickoff') rec = this.doKickoff();
     else if (this.phase === 'pat') rec = this.doPAT();
     else rec = this.doScrimmage();
     if (!rec) return this.next();
+    rec.id = this.curRecId;
     rec.before = rec.before || before;
     if (rec.type !== 'penalty' && rec.cast) this.applyFatigue(rec);
     rec.notes = [...(rec.notes || []), ...this.notes];
@@ -150,6 +155,55 @@ export class Game {
       involved.add(c.pid);
     });
     for (const d of this.depth) d.restExcept(involved, 2.4);
+    if (this.options.injuries) this.rollInjuries(rec);
+  }
+
+  // Injuries: rare, weighted by exposure (tackled runners, sacked QBs, tacklers, blockers),
+  // and more likely for low-HP or exhausted players.
+  rollInjuries(rec) {
+    const tackled = new Set(), tacklers = new Set(rec.tacklers || []);
+    if (rec.carrierId) tackled.add(rec.carrierId);
+    rec.cast.forEach((c, idx) => {
+      const card = this.players[c.pid];
+      const t = this.teamOf[c.pid];
+      if (!card || t == null || card.injured || card.pos === 'K') return;
+      const hit = tackled.has(c.pid) ? 0.0035 : tacklers.has(c.pid) ? 0.0015 : 0.00012;
+      const hp = card.ratings.stm, e = this.depth[t].energy[c.pid];
+      const p = hit * (1.6 - hp / 100) * (e < 60 ? 1.6 : 1);
+      if (!this.rng.chance(p)) return;
+      const { replacement } = this.depth[t].injure(card, this.players);
+      if (replacement) {
+        this.teamOf[replacement.id] = t;
+        if (!this.stats.players[replacement.id]) this.stats.players[replacement.id] = blankLine();
+      }
+      const who = replacement ? (replacement.outOfPosition ? `${replacement.name} moves from ${replacement.outOfPosition} to ${replacement.pos}` : `${replacement.name} takes over`) : 'no healthy backup, so he stays in';
+      this.note(`INJURY (${this.teams[t].abbr}): ${card.name} (${card.pos}) is out for the game — ${who}.`, 'injury');
+    });
+  }
+
+  // In-game scouting of team i's offense: recent efficiency and the receiver doing damage.
+  scouting(i) {
+    const R = this.recent[i];
+    const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+    const out = { ...this.tendency[i], runN: R.runs.length, passN: R.passes.length, runYpc: avg(R.runs), passYpa: avg(R.passes) };
+    // hot receiver: 60+ yards and clearly ahead of teammates, currently on the field
+    const onField = this.depth[i].onField;
+    const slotOf = { WR: 'WR', FXO: 'FX', RB: 'RB' };
+    let best = null, second = 0;
+    for (const [key, slot] of Object.entries(slotOf)) {
+      const c = onField[key]; const y = R.recYds[c.id] || 0;
+      if (!best || y > best.y) { if (best) second = Math.max(second, best.y); best = { slot, y, name: c.name }; } else second = Math.max(second, y);
+    }
+    if (best && best.y >= 60 && best.y >= second * 1.6) { out.hotSlot = best.slot; out.hotName = best.name; }
+    return out;
+  }
+  trackResult(i, res, yards) {
+    const R = this.recent[i];
+    if (res.kind === 'run' && !res.scramble) R.runs.push(yards);
+    else if (res.kind === 'pass' || res.kind === 'sack' || res.kind === 'int') R.passes.push(res.kind === 'int' ? -10 : yards);
+    if (R.runs.length > 12) R.runs.shift();
+    if (R.passes.length > 12) R.passes.shift();
+    if (res.completion && res.receiver) R.recYds[res.receiver] = (R.recYds[res.receiver] || 0) + yards;
   }
 
   checkQuarterEnd(rec) {
@@ -326,7 +380,7 @@ export class Game {
 
     // play calls
     const oc = callOffense(team, sit, this.rng);
-    const dc = callDefense(dteam, sit, this.tendency[i], this.rng);
+    const dc = callDefense(dteam, sit, this.scouting(i), this.rng);
     const rec = this.runScrimmagePlay(oc, dc, sit, {});
     if (this.goingForIt) { rec.presnap.decision = `4th down: ${this.goingForIt}`; this.goingForIt = null; }
     return rec;
@@ -347,16 +401,50 @@ export class Game {
       play, dcall, form: play.forms[pers],
       situation: {
         aggression: this.teams[i].coach.aggression, deepBias: this.teams[i].coach.deepRate - 0.5,
+        down: this.down, toGo: this.toGo,
         desperate: sit.secsGame <= 20 && sit.diff < 0 && this.quarter >= 4,
         wantOOB: sit.twoMinute && (this.quarter === 2 || sit.diff <= 0),
       },
     };
   }
 
+  // QB audible: read the defense's look (blitz, loaded box, soft shell) and check out.
+  audible(i, oc, dc, sit) {
+    const qb = this.depth[i].QB;
+    const vision = qb.ratings.awr;
+    const pers = this.depth[i].personnel;
+    const call = dc.dcall;
+    const blitzLook = call.tags.includes('blitz');
+    const softLook = call.id === 'prevent' || call.id === 'c4' || call.id === 'cloud';
+    const pickPlay = (ids) => { const opts = PLAYS.filter((p) => ids.includes(p.id) && p.forms[pers]); return opts.length ? this.rng.pick(opts) : null; };
+    if (sit.kneel || sit.spike || oc.play.special) return null;
+    // run into a loaded box -> quick throw
+    if (oc.play.type === 'run' && (call.id === 'runBlitz' || call.id === 'c0') && sit.toGo > 2 && this.rng.chance(vision / 140)) {
+      const p = pickPlay(['slants', 'quickOuts', 'hitchSeam', 'stick']);
+      if (p) return { play: p, why: `${qb.name} sees the loaded box and checks to ${p.name}` };
+    }
+    // pass vs the blitz -> hot/quick game
+    if (oc.play.type === 'pass' && blitzLook && oc.play.drop !== 'quick' && this.rng.chance(vision / 170)) {
+      const p = pickPlay(['slants', 'quickOuts', 'stick', 'rbScreen']);
+      if (p) return { play: p, why: `${qb.name} spots the blitz and checks to ${p.name}` };
+    }
+    // pass vs a soft shell on short yardage -> run it
+    if (oc.play.type === 'pass' && softLook && sit.toGo <= 4 && !sit.twoMinute && this.rng.chance(vision / 180)) {
+      const p = pickPlay(['insideZone', 'gunZone', 'power', 'iso']);
+      if (p) return { play: p, why: `${qb.name} sees a light box and checks to ${p.name}` };
+    }
+    return null;
+  }
+
   runScrimmagePlay(oc, dc, sit, { twoPoint = false } = {}) {
     const i = this.poss, d = 1 - i;
     const team = this.teams[i];
+    const aud = this.audible(i, oc, dc, sit);
+    if (aud) oc = { ...oc, play: aud.play, audible: aud.why };
     const args = this.simArgs(i, oc.play, dc.dcall, sit);
+    // pre-snap motion on some pass plays when the FLEX is split out
+    const fxAlign = FORMATIONS[args.form]?.align.FX;
+    args.motion = oc.play.type === 'pass' && !oc.play.special && fxAlign && Math.abs(fxAlign[1]) > 4 && this.rng.chance(0.3);
     const res = simulatePlay(args);
     // Poison: extra energy lost from contact with Poison types
     for (const pid in res.toxic) { const t = this.teamOf[pid]; if (t != null) this.depth[t].drain(this.players[pid], res.toxic[pid]); }
@@ -365,10 +453,11 @@ export class Game {
     const dd = this.ddText();
     const rec = {
       type: 'scrimmage', frames: res.frames, cast: res.cast, frameTeam: i, dir: this.dirFor(i), W: FIELD_W,
-      design: res.design, losX: los, fdX: Math.min(los + this.toGo, 100), events: res.events,
+      tacklers: res.tacklers, carrierId: res.tacklers?.length ? (res.kind === 'sack' ? res.cast.find((c) => c.side === 'O' && c.pos === 'QB')?.pid : (res.rusher || res.receiver || null)) : null,
+      design: res.design, losX: los, fdX: Math.min(los + this.toGo, 100), events: res.events, motionT: res.motionT || 0,
       presnap: {
         dd: twoPoint ? 'Two-point try' : dd, spot: this.yardText(los), offCall: `${oc.play.name}`, form: args.form,
-        defCall: dc.dcall.name, offReason: oc.reason, defReason: dc.reason, offTeam: i,
+        defCall: dc.dcall.name, offReason: oc.reason, defReason: dc.reason, offTeam: i, audible: oc.audible || null,
         syn: { off: { ...this.depth[i].synergy.O.active }, def: { ...this.depth[d].synergy.D.active } },
       },
     };
@@ -493,6 +582,7 @@ export class Game {
       if (res.td) L.td++;
     }
     if (res.brokenTackles >= 2) text += ` (${res.brokenTackles} broken tackles!)`;
+    this.trackResult(i, res, yards);
     if (this.drive) this.drive.yds += res.turnover ? 0 : yards;
 
     if (downBefore === 3) T.third[1]++;
@@ -562,11 +652,12 @@ export class Game {
       }
     }
     rec.text = text;
+    rec.gain = res.turnover ? 0 : yards;
     this.pushLog(rec, text, i);
   }
 
   pushLog(rec, text, team) {
-    this.log.push({ q: rec.before?.q ?? this.quarter, clock: rec.before?.clock ?? this.clock, team, dd: rec.presnap?.dd, spot: rec.presnap?.spot, text, highlight: rec.highlight, score: [...this.score] });
+    this.log.push({ q: rec.before?.q ?? this.quarter, clock: rec.before?.clock ?? this.clock, team, dd: rec.presnap?.dd, spot: rec.presnap?.spot, text, highlight: rec.highlight, score: [...this.score], recId: this.curRecId });
   }
 
   quarterEndRecord() {
@@ -684,6 +775,25 @@ export class Game {
     return [...D.offense(), ...D.defense()].filter((c) => kinds.includes(c.pos)).sort((a, b) => b.ratings.spd - a.ratings.spd)[0];
   }
 
+  // players for a return: card ratings, no synergy mods (special teams units mix positions)
+  stUnit(cards) { return cards.map((c) => ({ player: c, ratings: c.ratings, mods: {} })); }
+
+  // Run a simulated return (receiving team's frame). Returns the sim result.
+  runReturn(kind, kickerTeam, kickers, receivers, { kickX, kickY, landX, landY, hang }) {
+    return simulateReturn({ rng: this.rng, W: FIELD_W, kind, kickX, kickY, landX, landY, hang,
+      receivers: this.stUnit(receivers), coverage: this.stUnit(kickers) });
+  }
+
+  creditReturnStats(res) {
+    for (const st of res.stats) {
+      const L = this.stats.players[st.pid]; if (!L) continue;
+      if (st.stat === 'tkl') L.def.tkl++; else if (st.stat === 'ast') L.def.ast++;
+      else if (st.stat === 'ff') L.def.ff++; else if (st.stat === 'fr') L.def.fr++;
+      else if (st.stat === 'fum') L.fum++; else if (st.stat === 'brk') L.brk++;
+    }
+    for (const pid in res.toxic) { const t = this.teamOf[pid]; if (t != null) this.depth[t].drain(this.players[pid], res.toxic[pid]); }
+  }
+
   doKickoff() {
     const k = this.kicking, r = 1 - k;
     const K = this.depth[k].K;
@@ -696,61 +806,64 @@ export class Game {
     const sgm = this.situation(k);
     const onside = this.quarter >= 4 && sgm.diff < 0 && sgm.diff >= -16 && sgm.secsGame <= 150;
     const S = (id) => this.stats.players[id];
-    let text, spotR, hang, landX, landY = FIELD_W / 2 + this.rng.range(-6, 6), returnEndX = null, touchback = false;
-    let recovered = r;
-    if (onside) {
-      landX = kickX + 11 + this.rng.range(0, 2);
-      hang = 1.2;
-      const good = this.rng.chance(0.12);
-      recovered = good ? k : r;
-      spotR = 100 - Math.round(landX);
-      text = `${K.name} onside kick... ${good ? `RECOVERED by the ${this.teams[k].name}!` : `recovered by the ${this.teams[r].name}.`}`;
-    } else {
-      const dist = 58 + K.ratings.kpow * 0.12 + this.rng.gauss(0, 4);
-      landX = kickX + dist;
-      const landR = 100 - landX; // receiving frame
-      hang = 3.6 + K.ratings.kpow * 0.01;
-      if (landR < -3.5 || (landR < 0 && this.rng.chance(0.55))) {
-        touchback = true; spotR = 25;
-        text = `${K.name} kicks ${Math.round(dist)} yards into the end zone. Touchback.`;
-      } else {
-        const cover = (kickers.slice(1).reduce((s, p) => s + p.ratings.spd, 0)) / 6;
-        let ry = this.rng.gauss(21 + (retr.ratings.spd - cover) * 0.3, 7);
-        if (this.rng.chance(0.04)) ry += this.rng.gauss(28, 12);
-        ry = Math.max(4, ry);
-        const start = Math.max(landR, -2);
-        spotR = Math.round(start + ry);
-        const retYds = spotR - Math.round(start);
-        S(retr.id).ret.kr++;
-        if (spotR >= 100) {
-          spotR = 100;
-          S(retr.id).ret.kry += 100 - Math.round(start); S(retr.id).ret.td++;
-          text = `${K.name} kicks off. ${retr.name} takes it back ${100 - Math.round(start)} yards for a TOUCHDOWN!`;
-        } else {
-          S(retr.id).ret.kry += retYds;
-          text = `${K.name} kicks ${Math.round(dist)} yards, returned by ${retr.name} ${retYds} yards to the ${this.yardText(spotR, r)}.`;
-        }
-        returnEndX = 100 - spotR;
-      }
-    }
-    const sf = specialFrames({ kind: 'kickoff', W: FIELD_W, kickX, kickY: FIELD_W / 2, landX: Math.min(landX, 108), landY, hang, returnEndX,
-      kickers, receivers, returnerIdx: 0 });
-    const rec = { type: 'kickoff', ...sf, frameTeam: k, dir: this.dirFor(k), W: FIELD_W, losX: kickX, fdX: null, design: null, events: [], text,
-      presnap: { dd: onside ? 'Onside kick' : 'Kickoff', spot: this.yardText(kickX, k), offCall: onside ? 'Onside Kick' : 'Kickoff', defCall: onside ? 'Hands Team' : 'Kick Return', offReason: onside ? 'Need the ball back!' : '', defReason: '', offTeam: k } };
-    if (returnEndX != null) this.runPlayClock(Math.max(2, (sf.duration - hang - 0.9)));
+    const nm = (id) => this.players[id]?.name || '?';
+    const landY = FIELD_W / 2 + this.rng.range(-6, 6);
+    const presnap = { dd: onside ? 'Onside kick' : 'Kickoff', spot: this.yardText(kickX, k), offCall: onside ? 'Onside Kick' : 'Kickoff', defCall: onside ? 'Hands Team' : 'Kick Return', offReason: onside ? 'Need the ball back!' : '', defReason: '', offTeam: k };
     this.poss = k; // so changePossession flips to r
-    if (onside && recovered === k) {
-      this.poss = r;
-      this.changePossession(100 - (100 - Math.round(landX)), 'Onside');
+
+    // ---- onside kick (still a quick resolution)
+    if (onside) {
+      const landX = kickX + 11 + this.rng.range(0, 2);
+      const good = this.rng.chance(0.12);
+      const text = `${K.name} onside kick... ${good ? `RECOVERED by the ${this.teams[k].name}!` : `recovered by the ${this.teams[r].name}.`}`;
+      const sf = specialFrames({ kind: 'kickoff', W: FIELD_W, kickX, kickY: FIELD_W / 2, landX, landY, hang: 1.2, returnEndX: null, kickers, receivers, returnerIdx: 0 });
+      const rec = { type: 'kickoff', ...sf, frameTeam: k, dir: this.dirFor(k), W: FIELD_W, losX: kickX, fdX: null, design: null, events: [], text, presnap };
+      if (good) { this.poss = r; this.changePossession(Math.round(landX), 'Onside'); rec.highlight = 'fumble'; }
+      else this.changePossession(100 - Math.round(landX), 'Kickoff');
+      this.pushLog(rec, text, k);
+      return rec;
+    }
+
+    const dist = 58 + K.ratings.kpow * 0.12 + this.rng.gauss(0, 4);
+    const landK = kickX + dist; // kicking frame
+    const landR = 100 - landK; // receiving frame
+    const hang = 3.6 + K.ratings.kpow * 0.01;
+    // ---- touchback (deep kick, or returner kneels it)
+    if (landR < -3.5 || (landR < 0 && this.rng.chance(0.8))) {
+      const text = `${K.name} kicks ${Math.round(dist)} yards into the end zone. Touchback.`;
+      const sf = specialFrames({ kind: 'kickoff', W: FIELD_W, kickX, kickY: FIELD_W / 2, landX: Math.min(landK, 108), landY, hang, returnEndX: null, kickers, receivers, returnerIdx: 0 });
+      const rec = { type: 'kickoff', ...sf, frameTeam: k, dir: this.dirFor(k), W: FIELD_W, losX: kickX, fdX: null, design: null, events: [], text, presnap };
+      this.changePossession(25, 'Kickoff');
+      this.pushLog(rec, text, k);
+      return rec;
+    }
+    // ---- simulated return (receiving team's frame)
+    const res = this.runReturn('kickoff', k, kickers, receivers, { kickX: 100 - kickX, kickY: FIELD_W / 2, landX: Math.max(landR, -2), landY: FIELD_W - landY, hang });
+    this.creditReturnStats(res);
+    const start = Math.round(Math.max(res.catchX, -2));
+    const end = Math.round(res.endX);
+    let text;
+    const rec = { type: 'kickoff', frames: res.frames, cast: res.cast, duration: res.duration, frameTeam: r, dir: this.dirFor(r), W: FIELD_W, losX: null, fdX: null, design: null, events: res.events, presnap, tacklers: res.tacklers, carrierId: res.tacklers.length ? retr.id : null };
+    this.runPlayClock(Math.max(1, res.duration - (res.catchT ?? hang)));
+    if (res.fumble && res.recoveredBy === 'kicking') {
+      text = `${K.name} kicks off... ${retr.name} FUMBLES the return! ${this.teams[k].name} recover at the ${this.yardText(100 - end, k)}!`;
+      this.poss = r; this.changePossession(100 - clamp(end, 1, 99), 'Fumble');
       rec.highlight = 'fumble';
-    } else if (spotR >= 100) {
+    } else if (res.td) {
+      S(retr.id).ret.kr++; S(retr.id).ret.kry += 100 - start; S(retr.id).ret.td++;
+      text = `${K.name} kicks off. ${retr.name} takes it back ${100 - start} yards for a TOUCHDOWN!`;
       this.poss = r; this.startDrive(r, 'Kickoff');
       this.addScore(r, 6); rec.highlight = 'td';
       this.endDrive('Kick return TD');
       this.phase = 'pat'; this.patTeam = r;
     } else {
-      this.changePossession(spotR, 'Kickoff');
+      const spot = end <= 0 ? 20 : end; // tackled in the end zone = touchback-ish
+      S(retr.id).ret.kr++; S(retr.id).ret.kry += Math.max(0, end - start);
+      const tk = res.tacklers.length ? ` (${res.tacklers.map(nm).join(', ')})` : '';
+      text = `${K.name} kicks ${Math.round(dist)} yards, returned by ${retr.name} ${Math.max(0, end - start)} yards to the ${this.yardText(spot, r)}${tk}.`;
+      this.changePossession(spot, 'Kickoff');
     }
+    rec.text = text;
     this.pushLog(rec, text, k);
     return rec;
   }
@@ -760,62 +873,67 @@ export class Game {
     const K = this.depth[i].K;
     const los = this.ballOn;
     const S = (id) => this.stats.players[id];
+    const nm = (id) => this.players[id]?.name || '?';
     const retr = this.returnerFor(d, ['DB', 'RB', 'WR']);
     const kickers = [K, ...this.depth[i].offense().filter((c) => c.pos !== 'QB')];
     const receivers = [retr, ...this.depth[d].defense().filter((p) => p !== retr)].slice(0, 7);
     const dd = this.ddText();
     const spot = this.yardText(los);
+    const presnap = { dd, spot, offCall: 'Punt', defCall: 'Punt Return', offReason: reason, defReason: '', offTeam: i };
     this.stats.teams[i].plays++;
     const blocked = this.rng.chance(0.008);
     const dist = 39 + K.ratings.kpow * 0.12 + this.rng.gauss(0, 5);
-    let land = los + dist;
-    let text, newOn, returnEndX = null, hang = 3.6 + K.ratings.kpow * 0.012 + this.rng.gauss(0, 0.3);
+    const land = los + dist;
+    const hang = 3.6 + K.ratings.kpow * 0.012 + this.rng.gauss(0, 0.3);
     const landY = clamp(this.ballY + this.rng.gauss(0, 6), 4, FIELD_W - 4);
-    if (blocked) {
-      land = los - 6; hang = 0.4;
-      newOn = 100 - Math.round(land);
-      text = `${K.name} punt is BLOCKED! ${this.teams[d].name} take over at the ${this.yardText(Math.round(land), i)}.`;
-    } else if (land >= 100) {
-      newOn = 20;
-      S(K.id).punt.n++; S(K.id).punt.yds += 100 - los; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, 100 - los);
-      text = `${K.name} punts ${100 - los} yards into the end zone. Touchback.`;
-      land = Math.min(land, 108);
-    } else {
-      const py = Math.round(land - los);
-      S(K.id).punt.n++; S(K.id).punt.yds += py; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, py);
-      if (land >= 80) S(K.id).punt.in20++;
-      const fair = this.rng.chance(land >= 85 ? 0.6 : 0.35);
-      if (fair) {
-        newOn = 100 - Math.round(land);
-        text = `${K.name} punts ${py} yards. Fair catch by ${retr.name} at the ${this.yardText(newOn, d)}.`;
-      } else if (this.rng.chance(0.012)) {
-        newOn = null;
-        text = `${K.name} punts ${py} yards... MUFFED by ${retr.name}! ${this.teams[i].name} recover!`;
-      } else {
-        let ry = Math.max(0, this.rng.gauss(8 + (retr.ratings.spd - 75) * 0.2, 5));
-        if (this.rng.chance(0.03)) ry += this.rng.gauss(22, 10);
-        ry = Math.round(ry);
-        const startR = 100 - Math.round(land);
-        newOn = Math.min(100, startR + ry);
-        S(retr.id).ret.pr++; S(retr.id).ret.pry += newOn - startR;
-        if (newOn >= 100) { S(retr.id).ret.td++; text = `${K.name} punts ${py} yards. ${retr.name} returns it ${newOn - startR} yards for a TOUCHDOWN!`; }
-        else text = `${K.name} punts ${py} yards, returned by ${retr.name} ${ry} yards to the ${this.yardText(newOn, d)}.`;
-        returnEndX = 100 - newOn;
-      }
-    }
-    const sf = specialFrames({ kind: 'punt', W: FIELD_W, kickX: los, kickY: this.ballY, landX: land, landY, hang, returnEndX, kickers, receivers, returnerIdx: 0, blocked });
-    this.runPlayClock(Math.min(sf.duration, 12));
-    const rec = { type: 'punt', ...sf, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: null, design: null, events: [], text,
-      presnap: { dd, spot, offCall: 'Punt', defCall: 'Punt Return', offReason: reason, defReason: '', offTeam: i } };
     this.endDrive('Punt');
-    if (newOn === null) {
-      // muff: kicking team keeps it
-      this.ballOn = Math.round(land); this.down = 1; this.toGo = Math.min(10, 100 - this.ballOn); this.clockRunning = false;
+    // ---- blocked or touchback: quick resolution
+    if (blocked || land >= 100) {
+      let text, newOn;
+      if (blocked) {
+        newOn = 100 - Math.round(los - 6);
+        text = `${K.name} punt is BLOCKED! ${this.teams[d].name} take over at the ${this.yardText(Math.round(los - 6), i)}.`;
+      } else {
+        newOn = 20;
+        S(K.id).punt.n++; S(K.id).punt.yds += 100 - los; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, 100 - los);
+        text = `${K.name} punts ${100 - los} yards into the end zone. Touchback.`;
+      }
+      const sf = specialFrames({ kind: 'punt', W: FIELD_W, kickX: los, kickY: this.ballY, landX: blocked ? los - 6 : Math.min(land, 108), landY, hang: blocked ? 0.4 : hang, returnEndX: null, kickers, receivers, returnerIdx: 0, blocked });
+      this.runPlayClock(Math.min(sf.duration, 8));
+      const rec = { type: 'punt', ...sf, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: null, design: null, events: [], text, presnap };
+      this.changePossession(newOn, 'Punt');
+      this.pushLog(rec, text, i);
+      return rec;
+    }
+    // ---- simulated punt return (receiving team's frame)
+    const py = Math.round(land - los);
+    S(K.id).punt.n++; S(K.id).punt.yds += py; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, py);
+    if (land >= 80) S(K.id).punt.in20++;
+    const res = this.runReturn('punt', i, kickers, receivers, { kickX: 100 - los, kickY: FIELD_W - this.ballY, landX: 100 - land, landY: FIELD_W - landY, hang });
+    this.creditReturnStats(res);
+    this.runPlayClock(Math.min(res.duration, 12));
+    const rec = { type: 'punt', frames: res.frames, cast: res.cast, duration: res.duration, frameTeam: d, dir: this.dirFor(d), W: FIELD_W, losX: null, fdX: null, design: null, events: res.events, presnap, tacklers: res.tacklers, carrierId: res.tacklers.length ? retr.id : null };
+    const start = Math.round(res.catchX), end = Math.round(res.endX);
+    let text;
+    if (res.fairCatch) {
+      text = `${K.name} punts ${py} yards. Fair catch by ${retr.name} at the ${this.yardText(start, d)}.`;
+      this.changePossession(clamp(start, 1, 99), 'Punt');
+    } else if (res.fumble && res.recoveredBy === 'kicking') {
+      text = `${K.name} punts ${py} yards... MUFFED by ${retr.name}! ${this.teams[i].name} recover!`;
+      this.ballOn = clamp(100 - end, 1, 99); this.down = 1; this.toGo = Math.min(10, 100 - this.ballOn); this.clockRunning = false;
       this.startDrive(i, 'Muffed punt'); rec.highlight = 'fumble';
-    } else if (newOn >= 100) {
+    } else if (res.td) {
+      S(retr.id).ret.pr++; S(retr.id).ret.pry += 100 - start; S(retr.id).ret.td++;
+      text = `${K.name} punts ${py} yards. ${retr.name} returns it ${100 - start} yards for a TOUCHDOWN!`;
       this.poss = d; this.addScore(d, 6); rec.highlight = 'td';
       this.phase = 'pat'; this.patTeam = d;
-    } else this.changePossession(newOn, 'Punt');
+    } else {
+      S(retr.id).ret.pr++; S(retr.id).ret.pry += Math.max(0, end - start);
+      const tk = res.tacklers.length ? ` (${res.tacklers.map(nm).join(', ')})` : '';
+      text = `${K.name} punts ${py} yards, returned by ${retr.name} ${Math.max(0, end - start)} yards to the ${this.yardText(clamp(end, 1, 99), d)}${tk}.`;
+      this.changePossession(clamp(end, 1, 99), 'Punt');
+    }
+    rec.text = text;
     this.pushLog(rec, text, i);
     return rec;
   }

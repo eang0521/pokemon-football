@@ -9,8 +9,9 @@ export function spriteUrl(player, style = 'home') {
 }
 
 export class FieldRenderer {
-  constructor({ stage, field, overlay, tokens }) {
+  constructor({ stage, field, overlay, tokens, onPlayerHover }) {
     this.stage = stage; this.field = field; this.overlay = overlay; this.tokensEl = tokens;
+    this.onPlayerHover = onPlayerHover;
     this.fctx = field.getContext('2d');
     this.octx = overlay.getContext('2d');
     this.tokens = new Map();
@@ -63,9 +64,10 @@ export class FieldRenderer {
       ctx.fillStyle = (X / 5) % 2 ? '#2a8a45' : '#2f944b';
       ctx.fillRect(this.sx(X), y0, 5 * s + 1, y1 - y0);
     }
-    // end zones: painted with the team defending that end this quarter
-    const leftTeam = game ? (game.dirFor(0) === 1 ? game.teams[0] : game.teams[1]) : null;
-    const rightTeam = game ? (leftTeam === game.teams[0] ? game.teams[1] : game.teams[0]) : null;
+    // end zones: painted with the team defending that end during this play
+    const leftIdx = rec ? (rec.dir > 0 ? rec.frameTeam : 1 - rec.frameTeam) : 0;
+    const leftTeam = game ? game.teams[leftIdx] : null;
+    const rightTeam = game ? game.teams[1 - leftIdx] : null;
     for (const [ex, team] of [[-10, leftTeam], [100, rightTeam]]) {
       ctx.fillStyle = team ? team.colors.primary : '#225';
       ctx.fillRect(this.sx(ex), y0, 10 * s, y1 - y0);
@@ -159,6 +161,12 @@ export class FieldRenderer {
         img.referrerPolicy = 'no-referrer';
         img.onerror = () => { if (!img.dataset.fallback) { img.dataset.fallback = '1'; img.src = spriteUrl(pl, 'home'); } };
         this.tokensEl.appendChild(el);
+        el.dataset.pid = c.pid;
+        if (this.onPlayerHover) {
+          el.addEventListener('mouseenter', () => this.onPlayerHover(el.dataset.pid, el));
+          el.addEventListener('mouseleave', () => this.onPlayerHover(null));
+          el.addEventListener('click', (e) => { e.stopPropagation(); this.onPlayerHover(el.dataset.pid, el, true); });
+        }
         t = { el, img, pl, style: null, flip: false };
         this.tokens.set(c.pid, t);
       }
@@ -295,6 +303,14 @@ export class FieldRenderer {
       if (n >= 2) arrowHead(ctx, this.sx(absX(r.pts[n - 2].x)), this.sy(absY(r.pts[n - 2].y)), this.sx(absX(r.pts[n - 1].x)), this.sy(absY(r.pts[n - 1].y)), s * 0.9);
     }
     ctx.setLineDash([]);
+    // pre-snap motion path
+    if (d.motion) {
+      const a = d.motion.from, b = d.motion.to;
+      ctx.strokeStyle = 'rgba(255, 203, 5, .9)'; ctx.lineWidth = 2; ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(this.sx(absX(a.x)), this.sy(absY(a.y))); ctx.lineTo(this.sx(absX(b.x)), this.sy(absY(b.y))); ctx.stroke();
+      ctx.setLineDash([]);
+      arrowHead(ctx, this.sx(absX(a.x)), this.sy(absY(a.y)), this.sx(absX(b.x)), this.sy(absY(b.y)), s * 0.9, 'rgba(255, 203, 5, .9)');
+    }
     // run aim point
     if (d.aim) {
       const X = this.sx(absX(d.aim.x)), Y = this.sy(absY(d.aim.y));
