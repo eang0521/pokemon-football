@@ -27,7 +27,8 @@
   <main id="setup" class="setup">
     <section class="setup-intro">
       <h2>Pick your matchup</h2>
-      <p>Choose an away team, then a home team. Every play is called by each coach's AI and simulated player by player. QBs read progressions, defenders play their zones and man assignments, and ratings come from each Pokémon's base stats.</p>
+      <p>Choose an away team, then a home team, or build your own from any Pokémon card. Every card is a Pokémon at a position, and its six base stats mean something different at each position. Coaches call every play, and players get tired and rotate in from the bench.</p>
+      <button id="btn-build" type="button" class="primary build-btn">＋ Build a team</button>
     </section>
     <div class="matchup-bar">
       <div class="slot" id="slot-away"><span class="slot-label">Away</span><span class="slot-name">Select a team</span></div>
@@ -40,6 +41,55 @@
       </div>
     </div>
     <div id="team-grid" class="team-grid"></div>
+  </main>
+
+  <!-- ============ TEAM BUILDER ============ -->
+  <main id="builder" class="builder hidden">
+    <div class="b-head">
+      <div class="b-ident">
+        <input id="b-city" type="text" maxlength="16" placeholder="City" aria-label="City" />
+        <input id="b-name" type="text" maxlength="16" placeholder="Team name" aria-label="Team name" />
+        <input id="b-abbr" type="text" maxlength="3" placeholder="ABC" aria-label="Abbreviation" class="abbr" />
+        <label class="color">Primary <input id="b-c1" type="color" value="#3d7dca" /></label>
+        <label class="color">Secondary <input id="b-c2" type="color" value="#ffcb05" /></label>
+      </div>
+      <div class="b-actions">
+        <button id="b-auto" type="button" title="Fill empty slots with the best available cards (respects the BST cap)">Auto-fill</button>
+        <button id="b-clear" type="button" class="ghost">Clear</button>
+        <button id="b-delete" type="button" class="ghost danger hidden">Delete</button>
+        <button id="b-cancel" type="button" class="ghost">Cancel</button>
+        <button id="b-save" type="button" class="primary">Save team</button>
+      </div>
+    </div>
+    <div class="b-body">
+      <section class="b-roster">
+        <div class="b-summary" id="b-summary"></div>
+        <div id="b-slots"></div>
+        <details class="b-coach">
+          <summary>Coach tendencies</summary>
+          <div id="b-coach"></div>
+        </details>
+      </section>
+      <section class="b-browser">
+        <div class="b-browser-head">
+          <h3 id="b-title">Choose a card</h3>
+          <div class="b-postabs" id="b-postabs"></div>
+          <div class="b-filters">
+            <input id="b-search" type="search" placeholder="Search Pokémon or type…" aria-label="Search" />
+            <select id="b-sort" aria-label="Sort"></select>
+            <select id="b-cap" aria-label="Base stat total cap">
+              <option value="9999">Any BST</option>
+              <option value="600">BST ≤ 600</option>
+              <option value="540">BST ≤ 540</option>
+              <option value="500">BST ≤ 500</option>
+              <option value="450">BST ≤ 450</option>
+            </select>
+          </div>
+          <p class="b-legend" id="b-legend"></p>
+        </div>
+        <div id="b-list" class="b-list"></div>
+      </section>
+    </div>
   </main>
 
   <!-- ============ GAME ============ -->

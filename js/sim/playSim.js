@@ -3,8 +3,7 @@
 // Everything is in the OFFENSE frame: x = yards from the offense's own goal line
 // (offense attacks toward x = 100), y = 0..W across the field.
 // The sim records a frame every tick so the UI can replay it.
-import { FORMATIONS, ROUTES } from '../playbook.js';
-import { OFF_POS, DEF_POS } from '../data/teams.js';
+import { FORMATIONS, ROUTES, assignFor, resolveDefense } from '../playbook.js';
 
 export const DT = 0.05;
 const MAX_T = 14;
@@ -19,7 +18,7 @@ const r2 = (v) => Math.round(v * 100) / 100;
 function makeEnt(player, ratings, side, pos, idx) {
   const rt = ratings;
   return {
-    idx, side, pos, pl: player, r: rt,
+    idx, side, pos, kind: player.pos, pl: player, r: rt,
     x: 0, y: 0, vx: 0, vy: 0, x0: 0, y0: 0,
     maxSpd: 5.6 + rt.spd * 0.043,
     accel: 4.6 + rt.agi * 0.045,
@@ -57,6 +56,7 @@ function zoneSpot(name, S) {
   let depth, y, halfW, deep = false;
   switch (base) {
     case 'deepMid': depth = 14.5; y = (W / 2 + ballY) / 2; halfW = 16; deep = true; break;
+    case 'half': depth = 13.5; y = W / 2 + side * (W / 4); halfW = 10; deep = true; break;
     case 'third': depth = 13; y = W / 2 + side * (W / 3); halfW = 7.5; deep = true; break;
     case 'quarter': depth = 11; y = W / 2 + side * 13; halfW = 7; deep = true; break;
     case 'curl': depth = 7; y = ballY + side * 9; halfW = 6; break;
@@ -84,19 +84,24 @@ export function simulatePlay(opts) {
     qb: { state: 'drop', tSet: null, readIdx: 0, lastEval: 0, onRun: false },
     stats: [], tacklers: [], design: { routes: [], zones: [], aim: null, rush: [] },
   };
-  const form = FORMATIONS[play.form];
+  const form = FORMATIONS[opts.form];
+  S.form = form;
+  S.pers = offense.personnel;
 
-  OFF_POS.forEach((pos, i) => {
-    const e = makeEnt(offense.players[pos], offense.ratings[pos], 'O', pos, i);
-    const [dx, dy] = form.align[pos];
+  offense.slots.forEach(({ slot, player, ratings }, i) => {
+    const e = makeEnt(player, ratings, 'O', slot, i);
+    const [dx, dy] = form.align[slot];
     e.x = e.x0 = los + dx;
     e.y = e.y0 = clamp(ballY + dy * flip, 1.2, W - 1.2);
-    S.ents.push(e); S.O[pos] = e;
+    S.ents.push(e); S.O[slot] = e;
   });
-  DEF_POS.forEach((pos, i) => {
-    const e = makeEnt(defense.players[pos], defense.ratings[pos], 'D', pos, i + 7);
-    S.ents.push(e); S.D[pos] = e;
+  defense.slots.forEach(({ slot, player, ratings }, i) => {
+    const e = makeEnt(player, ratings, 'D', slot, i + 7);
+    S.ents.push(e); S.D[slot] = e;
   });
+  S.offList = S.ents.filter((e) => e.side === 'O');
+  S.defList = S.ents.filter((e) => e.side === 'D');
+  S.runner = play.carrier === 'FX' ? S.O.FX : S.O.RB;
 
   setupOffense(S);
   setupDefense(S);
@@ -108,7 +113,7 @@ export function simulatePlay(opts) {
   // snap
   S.ball.holder = S.O.QB;
   S.O.QB.hasBall = true;
-  if (play.type === 'run' && play.scheme === 'sneak') { setCarrier(S, S.O.QB); S.handed = true; S.handTime = 0; }
+  if (play.type === 'run' && play.carrier === 'QB') { setCarrier(S, S.O.QB); S.handed = true; S.handTime = 0; }
 
   while (!S.result && S.t < MAX_T) {
     S.t = r2(S.t + DT);
@@ -121,36 +126,40 @@ export function simulatePlay(opts) {
 
 function setupOffense(S) {
   const { play, flip, O } = S;
-  const rbOut = () => {
-    const rb = O.RB;
-    const dy = (rb.y - S.ballY) * flip;
-    if (Math.abs(dy) > 0.5) return Math.sign(rb.y - S.ballY);
+  const pers = S.pers;
+  const backOut = (e) => {
+    const dy = e.y0 - S.ballY;
+    if (Math.abs(dy) > 0.5) return Math.sign(dy);
     return flip * (play.rbDir || 1);
   };
-  for (const pos of ['WR1', 'WR2', 'TE', 'RB']) {
-    const e = O[pos];
+  for (const slot of ['WR', 'FX', 'RB']) {
+    const e = O[slot];
+    e.detached = Math.abs(e.y0 - S.ballY) > 4;
     if (play.type === 'run') {
-      e.role = pos === 'RB' && play.carrier !== 'QB' ? 'runner' : (pos === 'RB' ? 'runblock' : pos === 'TE' ? 'runblock' : 'stalk');
+      if (e === S.runner && play.carrier !== 'QB') e.role = 'runner';
+      else if (e.detached) e.role = 'stalk';
+      else e.role = 'runblock';
       continue;
     }
-    const a = play.assign[pos];
+    const a = assignFor(play, slot, pers);
     if (!a || a === 'block') { e.role = 'pblock'; continue; }
     const rdef = ROUTES[a];
-    const out = pos === 'RB' ? rbOut() : Math.sign(e.y - S.ballY) || flip;
+    const back = e.x0 < S.los - 2;
+    const out = back ? backOut(e) : Math.sign(e.y0 - S.ballY) || flip;
     const pts = rdef.pts.map(([f, o]) => ({ x: Math.min(e.x0 + f, 109), y: clamp(e.y0 + o * out, 1.8, S.W - 1.8) }));
     e.role = 'route';
     e.route = { name: a, pts, settle: !!rdef.settle, depth: rdef.depth, delay: rdef.delay || 0, screen: !!rdef.screen };
     e.wp = 0;
     S.design.routes.push({ idx: e.idx, pts: [{ x: e.x0, y: e.y0 }, ...pts], name: a });
   }
-  O.C.role = O.G.role = play.type === 'run' ? 'runblock' : 'pblock';
+  for (const k of ['LG', 'C', 'RG']) O[k].role = play.type === 'run' ? 'runblock' : 'pblock';
   O.QB.role = 'qb';
-  if (play.prog) S.design.prog = play.prog.map((p) => O[p].idx);
+  if (play.prog) S.design.prog = play.prog.map((p) => O[p]).filter((e) => e.role === 'route').map((e) => e.idx);
   if (play.type === 'run') {
     S.design.aim = { x: S.los + 1, y: clamp(S.ballY + flip * play.aim, 1.5, S.W - 1.5) };
     S.runSide = Math.sign(play.aim) * flip || flip;
-    const shotgun = FORMATIONS[play.form].shotgun;
-    const qb = O.QB, rb = O.RB;
+    const shotgun = S.form.shotgun;
+    const qb = O.QB, rb = S.runner;
     if (play.scheme === 'draw') S.mesh = { x: S.los - 5.2, y: S.ballY + S.runSide * 0.2 };
     else if (shotgun) S.mesh = rb.x < qb.x - 1.5 ? { x: qb.x - 1.0, y: qb.y + S.runSide * 0.4 } : { x: qb.x + 0.7, y: qb.y + S.runSide * 0.5 };
     else S.mesh = { x: S.los - 3.9, y: S.ballY + S.runSide * 0.8 };
@@ -158,92 +167,82 @@ function setupOffense(S) {
     // the back must be able to reach the mesh from behind
     if (rb.x > S.mesh.x - 0.5 && play.carrier !== 'QB') S.mesh.x = rb.x + 0.8;
   }
-  if (play.screen) { O.C.screenRelease = 1.1; O.G.screenRelease = 1.1; }
+  if (play.screen) for (const k of ['LG', 'C', 'RG']) O[k].screenRelease = 1.1;
 }
 
 function assignRunBlocks(S) {
-  const { O, D, play, flip } = S;
-  const ps = Math.sign(play.aim) * flip || flip;
-  const box = [D.DL1, D.DL2, D.LB1, D.LB2];
-  const blockers = [O.C, O.G, O.TE];
-  if (play.carrier === 'QB') blockers.push(O.RB);
+  const { O, play } = S;
+  const ps = S.runSide;
+  const ofKind = (k) => S.defList.filter((d) => d.kind === k);
+  const dls = ofKind('DL').sort((a, b) => (b.y - a.y) * ps); // playside first
+  const lbs = ofKind('LB').sort((a, b) => (b.y - a.y) * ps);
   const taken = new Set();
-  const give = (b, d) => { if (d) { b.assignDef = d; taken.add(d); } };
+  const give = (b, d) => { if (b && d) { b.assignDef = d; taken.add(d); } };
+  const nextLB = () => lbs.find((l) => !taken.has(l)) || ofKind('DB').filter((d) => !taken.has(d)).sort((a, b) => a.x - b.x)[0];
+  const oline = [O.LG, O.C, O.RG].sort((a, b) => (b.y - a.y) * ps);
+  const extra = [O.FX, O.RB].filter((e) => e.role === 'runblock'); // TE, fullback, lead back
 
   if (play.scheme === 'power' || play.scheme === 'counter') {
-    // down blocks + pulling guard to the playside linebacker
-    const dls = [D.DL1, D.DL2].sort((a, b) => (a.y - b.y) * ps);
-    give(O.TE, dls[1]); give(O.C, dls[0]);
-    O.G.pull = { x: S.los - 1.4, y: S.ballY + ps * 2.2 };
-    const lbs = [D.LB1, D.LB2].sort((a, b) => (b.y - a.y) * ps);
-    give(O.G, lbs[0]);
-    if (O.RB.role === 'runblock') give(O.RB, lbs[1]);
+    // backside guard pulls to the playside linebacker; everyone else blocks down
+    const puller = oline[oline.length - 1];
+    puller.pull = { x: S.los - 1.4, y: S.ballY + ps * 2.2 };
+    oline.slice(0, -1).forEach((b, i) => give(b, dls[i]));
+    for (const e of extra) give(e, dls.find((d) => !taken.has(d)) || nextLB());
+    give(puller, nextLB());
     return;
   }
-  const dls = [D.DL1, D.DL2].sort((a, b) => (b.y - a.y) * ps); // playside first
-  const lbs = [D.LB1, D.LB2].sort((a, b) => (b.y - a.y) * ps);
-  const oline = [O.C, O.G].sort((a, b) => (b.y - a.y) * ps);
-  if (play.scheme === 'read') {
-    // leave the backside end unblocked; QB reads him, C & G climb
-    S.readDef = dls[1];
-    taken.add(dls[1]);
-    give(oline[0], dls[0]);
-    give(oline[1], lbs[1]);
-  } else {
-    // zone: linemen take the down linemen
-    give(oline[0], dls[0]);
-    give(oline[1], dls[1]);
+  if (play.scheme === 'read' && dls.length) {
+    // leave the backside end unblocked; the QB reads him
+    S.readDef = dls[dls.length - 1];
+    taken.add(S.readDef);
   }
-  // TE: inline -> playside LB; flexed -> the nearest LB on his side
-  const te = O.TE;
-  const teLb = lbs.filter((l) => !taken.has(l)).sort((a, b) => dist(te, a) - dist(te, b))[0];
-  if (teLb && (Math.abs(te.y - S.ballY) < 4 || dist(te, teLb) < 6)) give(te, teLb);
-  else te.role = 'stalk';
-  if (O.RB.role === 'runblock') give(O.RB, lbs.find((l) => !taken.has(l)));
+  // zone: linemen take the down linemen playside-first, the rest climb to linebackers
+  for (const b of oline) give(b, dls.find((d) => !taken.has(d)) || nextLB());
+  for (const e of extra) give(e, nextLB());
 }
 
 function setupDefense(S) {
-  const { D, O, dcall, los, ballY, flip, W } = S;
-  for (const pos of DEF_POS) {
-    const e = D[pos];
-    const a = dcall.assign[pos];
+  const { O, dcall, los, ballY, flip, W } = S;
+  const roles = resolveDefense(dcall, S.defList.map((e) => ({ slot: e.pos, kind: e.kind, r: e.r })),
+    { WR: O.WR, FX: O.FX, RB: O.RB });
+  for (const e of S.defList) {
+    const a = roles[e.pos];
     e.assign = a;
     if (a === 'rush') e.role = 'rush';
     else if (a === 'spy') e.role = 'spy';
-    else if (a.man) { e.role = 'man'; e.man = O[a.man]; e.press = !!a.press; e.box = !!a.box; }
-    else if (a.dog) { e.role = 'dog'; e.man = O[a.dog]; }
-    else if (a.zone) { e.role = 'zone'; e.zone = zoneSpot(a.zone, S); }
+    else if (a.man) { e.role = a.dog ? 'dog' : 'man'; e.man = O[a.man]; e.press = !!a.press; }
+    else { e.role = 'zone'; e.zone = zoneSpot(a.zone, S); }
   }
   // alignment
-  D.DL1.x = los + 1; D.DL1.y = ballY + flip * 1.0;
-  D.DL2.x = los + 1; D.DL2.y = ballY - flip * 1.5;
-  for (const pos of ['LB1', 'LB2', 'CB1', 'CB2', 'S']) {
-    const e = D[pos];
-    if (e.role === 'rush') { e.x = los + 4; e.y = ballY + (pos === 'LB1' ? 1.5 : -2.5) * flip; }
+  const dls = S.defList.filter((e) => e.kind === 'DL');
+  const dlSpots = dls.length >= 3 ? [0, 2.4, -2.4] : [1.0, -1.5];
+  dls.forEach((e, i) => { e.x = los + 1; e.y = ballY + flip * (dlSpots[i] ?? i * 1.2); });
+  let rushN = 0;
+  for (const e of S.defList) {
+    if (e.kind === 'DL') continue;
+    if (e.role === 'rush') { e.x = los + 4; e.y = ballY + flip * [1.5, -2.5, 3.5, -4][rushN++ % 4]; }
     else if (e.role === 'spy') { e.x = los + 5; e.y = ballY; }
     else if (e.role === 'man' || e.role === 'dog') {
       const m = e.man;
       const inside = Math.sign(ballY - m.y) || 0;
-      if (pos.startsWith('CB')) { e.x = los + (e.press ? 1.2 : 6); e.y = m.y + inside * 0.8; }
-      else if (e.box) { e.x = los + 4.5; e.y = m.y + inside * 1; }
-      else if (pos === 'S') { e.x = los + 7; e.y = m.y + inside * 1; }
+      if (m.detached) { e.x = los + (e.press ? 1.2 : e.kind === 'DB' ? 6 : 5); e.y = m.y + inside * 0.8; }
       else { e.x = los + 4.5; e.y = m.y * 0.55 + ballY * 0.45; }
-    } else if (e.role === 'zone') {
+    } else {
       const z = e.zone;
-      if (pos.startsWith('CB')) {
-        // align over the widest receiver on that side
+      const sided = /[WS]$/.test(z.name);
+      if (z.deep && sided) {
+        // corners: over the widest receiver on that side
         const sideSign = Math.sign(z.y - W / 2) || 1;
-        const wide = [O.WR1, O.WR2, O.TE, O.RB].filter((r) => Math.sign(r.y - ballY) === sideSign)
+        const wide = [O.WR, O.FX, O.RB].filter((r) => r.detached && Math.sign(r.y - ballY) === sideSign)
           .sort((a, b) => Math.abs(b.y - ballY) - Math.abs(a.y - ballY))[0];
-        e.x = los + (z.deep ? 7 : 5);
+        e.x = los + (z.name.startsWith('prevent') ? 12 : 7);
         e.y = wide ? wide.y + sideSign * 1 : z.y;
-        if (z.name.startsWith('prevent')) e.x = los + 12;
-      } else if (pos === 'S') { e.x = Math.min(los + (z.name.startsWith('prevent') ? 20 : 12.5), 108); e.y = z.y; }
+      } else if (z.deep) { e.x = Math.min(los + (z.name.startsWith('prevent') ? 20 : 12.5), 108); e.y = z.y; }
+      else if (z.name.startsWith('flat')) { e.x = los + 5; e.y = z.y; }
       else { e.x = los + 4.5; e.y = clamp(z.y * 0.6 + ballY * 0.4, 2, W - 2); }
     }
   }
-  for (const pos of DEF_POS) {
-    const e = D[pos];
+  for (const e of S.defList) {
     e.y = clamp(e.y, 1, W - 1);
     e.x0 = e.x; e.y0 = e.y;
     if (e.role === 'zone') S.design.zones.push({ idx: e.idx, x: e.zone.x, y: e.zone.y, r: e.zone.halfW, deep: e.zone.deep });
@@ -267,11 +266,11 @@ function tick(S) {
   // --- offense
   qbLogic(S);
   if (S.result) return;
-  for (const pos of ['RB', 'WR1', 'WR2', 'TE', 'C', 'G']) offenseSkill(S, O[pos]);
+  for (const e of S.offList) if (e !== O.QB) offenseSkill(S, e);
   if (S.carrier) carrierLogic(S, S.carrier);
 
   // --- defense
-  for (const pos of DEF_POS) defenseLogic(S, S.D[pos]);
+  for (const e of S.defList) defenseLogic(S, e);
 
   // --- engagements (blocks)
   updatePairs(S);
@@ -352,7 +351,7 @@ function qbLogic(S) {
 
   // ---- pass play
   const dd = { quick: 1, std: 2, deep: 3 }[play.drop] || 2;
-  const shotgun = FORMATIONS[play.form].shotgun;
+  const shotgun = S.form.shotgun;
   if (!st.drop) {
     st.drop = shotgun ? { x: S.los - 5 - dd, y: S.ballY } : { x: S.los - 1 - [0, 3, 5, 7][dd], y: S.ballY };
     if (play.boot) st.boot = { x: S.los - 6, y: clamp(S.ballY - S.flip * 9, 3, S.W - 3) };
@@ -475,9 +474,8 @@ function qbLogic(S) {
 
 function qbRunPlay(S, qb) {
   const { play, t, O, flip } = S;
-  const rb = O.RB;
+  const rb = S.runner;
   if (S.handed) return;
-  const shotgun = FORMATIONS[play.form].shotgun;
   if (play.scheme === 'toss') {
     steer(qb, qb.x - 0.5, qb.y, 0.4, S);
     if (t >= 0.25) {
@@ -690,7 +688,7 @@ function updateBallFlight(S) {
       if (hyp(d.x - b.x, d.y - b.y) < 0.85 && b.z < 2.2 + d.height * 0.4) {
         d.tipTried = true;
         if (S.rng.chance(0.55)) {
-          if (S.rng.chance(0.2 + d.r.hands * 0.003)) return intercept(S, d, 'undercuts the route and picks it off');
+          if (S.rng.chance(0.2 + d.r.ball * 0.003)) return intercept(S, d, 'undercuts the route and picks it off');
           event(S, `Tipped by ${d.pl.name}!`);
           credit(S, d, 'pd', 1);
           return endPlay(S, { type: 'incomplete' });
@@ -729,10 +727,10 @@ function resolveCatch(S) {
     return endPlay(S, { type: 'incomplete', oob: true });
   }
   if (recIn && defIn) {
-    const hand = rec.r.hands, cov = bestD.r.awr * 0.5 + bestD.r.hands * 0.5;
+    const hand = rec.r.hands * 0.7 + rec.r.str * 0.3, cov = bestD.r.cover * 0.4 + bestD.r.ball * 0.3 + bestD.r.press * 0.3;
     const edge = (dd - dr) * 0.35;
     const pCatch = clamp(0.5 + (hand - cov) * 0.007 + edge + (rec.height - bestD.height) * 0.08, 0.15, 0.85);
-    const pInt = clamp(0.1 + (bestD.r.hands - 60) * 0.003 - edge * 0.3, 0.02, 0.3);
+    const pInt = clamp(0.1 + (bestD.r.ball - 60) * 0.003 - edge * 0.3, 0.02, 0.3);
     const roll = S.rng.next();
     if (dd < dr - 0.4 && S.rng.chance(0.07)) return endPlay(S, { type: 'dpi', defender: bestD, spot: L.x });
     if (roll < pCatch) { event(S, `${rec.pl.name} makes a contested catch!`, 'big'); return catchMade(S, rec, false, bestD); }
@@ -749,7 +747,7 @@ function resolveCatch(S) {
     return endPlay(S, { type: 'incomplete', drop: true });
   }
   if (defIn) {
-    if (S.rng.chance(0.18 + bestD.r.hands * 0.004)) return intercept(S, bestD, 'reads it all the way');
+    if (S.rng.chance(0.18 + bestD.r.ball * 0.004)) return intercept(S, bestD, 'reads it all the way');
     credit(S, bestD, 'pd', 1);
     return endPlay(S, { type: 'incomplete', pbu: bestD });
   }
@@ -835,7 +833,7 @@ function runRoute(S, e) {
       if (next) {
         const a1 = Math.atan2(p.y - prev.y, p.x - prev.x), a2 = Math.atan2(next.y - p.y, next.x - p.x);
         let da = Math.abs(a2 - a1); if (da > Math.PI) da = 2 * Math.PI - da;
-        if (da > 0.7) { const k = 0.5 + e.r.agi * 0.0045; e.vx *= k; e.vy *= k; }
+        if (da > 0.7) { const k = 0.45 + e.r.route * 0.004 + e.r.agi * 0.001; e.vx *= k; e.vy *= k; }
       }
     }
     return;
@@ -889,7 +887,7 @@ function passBlock(S, e, check = false) {
   if (check && (!best || dist(best, qb) > 7)) return; // release after delay
   if (!best) {
     const tx = Math.max(qb.x + 2.2, S.los - 2.5);
-    steer(e, e.pos === 'C' || e.pos === 'G' ? Math.min(tx, S.los - 0.5) : e.x, e.y, 0.3, S);
+    steer(e, e.kind === 'OL' ? Math.min(tx, S.los - 0.5) : e.x, e.y, 0.3, S);
     return;
   }
   best.claimedBy = e; best.claimedT = S.t;
@@ -924,7 +922,7 @@ function runBlock(S, e) {
     let tgt = e.assignDef;
     if (!tgt) {
       let bs = Infinity;
-      for (const d of S.ents) if (d.side === 'D' && (d.pos.startsWith('CB') || d.pos === 'S') && !d.stalked) { const dd = dist(e, d); if (dd < bs) { bs = dd; tgt = d; } }
+      for (const d of S.ents) if (d.side === 'D' && d.kind === 'DB' && !d.stalked) { const dd = dist(e, d); if (dd < bs) { bs = dd; tgt = d; } }
       if (tgt) { tgt.stalked = e; e.assignDef = tgt; }
     }
     if (!tgt) return steer(e, e.x + 2, e.y, 0.5, S);
@@ -947,7 +945,7 @@ function runBlock(S, e) {
     }
     if (!d || bs > 8) {
       // lead up the field
-      const c = S.carrier || S.O.RB;
+      const c = S.carrier || S.runner;
       return steer(e, c.x + 3, c.y, 0.8, S);
     }
     e.assignDef = d;
@@ -1005,16 +1003,17 @@ function defenseLogic(S, e) {
   if (S.carrier && S.carrier.side === 'D') return escortReturn(S, e);
 
   // linebackers & safeties read their keys before committing
-  const reader = e.pos.startsWith('LB') || e.pos === 'S';
+  const deepDB = e.kind === 'DB' && e.role === 'zone' && e.zone.deep;
+  const reader = e.kind === 'LB' || deepDB;
   e.spdMul = reader && e.role !== 'rush' && t < e.diagT ? 0.45 : 1;
 
   if (S.play.type === 'run' && !S.completion) {
-    const diag = e.diagT + (e.pos === 'S' && !e.box ? 0.25 : 0);
+    const diag = e.diagT + (deepDB ? 0.25 : 0);
     if (t < diag && S.play.scheme !== 'sneak') return coverageLogic(S, e);
     const c = S.carrier || S.ball.holder;
     // corners in man stay with their man until the ball is clearly coming their way
-    if (e.role === 'man' && e.pos.startsWith('CB') && c && c.x < S.los + 0.5 && dist(e, c) > 7) return coverageLogic(S, e);
-    return pursueCarrier(S, e, e.role !== 'rush' && e.role !== 'dogRush' && !e.pos.startsWith('DL'));
+    if (e.role === 'man' && e.kind === 'DB' && c && c.x < S.los + 0.5 && dist(e, c) > 7) return coverageLogic(S, e);
+    return pursueCarrier(S, e, e.role !== 'rush' && e.role !== 'dogRush' && e.kind !== 'DL');
   }
 
   if (S.carrier) {
@@ -1024,8 +1023,8 @@ function defenseLogic(S, e) {
   }
 
   // play-action bite
-  if (S.play.pa && (e.pos.startsWith('LB') || e.pos === 'S') && e.role !== 'rush') {
-    const bite = clamp(0.25 + (100 - e.r.awr) * 0.012, 0.2, 0.95) * (e.pos === 'S' ? 0.5 : 1);
+  if (S.play.pa && reader && e.role !== 'rush') {
+    const bite = clamp(0.25 + (100 - e.r.awr) * 0.012, 0.2, 0.95) * (deepDB ? 0.5 : 1);
     if (t > 0.2 && t < 0.2 + bite) return steer(e, S.los + 1.5, e.y + (S.O.RB.y - e.y) * 0.3, 0.7, S);
   }
   return coverageLogic(S, e);
@@ -1039,7 +1038,7 @@ function coverageLogic(S, e) {
       if (S.thrown) return steer(e, e.x - 0.5, e.y, 0.3, S);
       let tgt = S.carrier || (S.ball.holder || qb);
       // vs a run look, attack the mesh (where the ball will be)
-      if (S.play.type === 'run' && !S.handed && S.mesh) tgt = { x: (S.mesh.x + S.O.RB.x) / 2, y: (S.mesh.y + S.O.RB.y) / 2 };
+      if (S.play.type === 'run' && !S.handed && S.mesh) tgt = { x: (S.mesh.x + S.runner.x) / 2, y: (S.mesh.y + S.runner.y) / 2 };
       // avoid unengaged blockers directly in the path
       let tx = tgt.x, ty = tgt.y;
       for (const b of S.ents) {
@@ -1079,12 +1078,13 @@ function manCover(S, e, m) {
   // press jam at the line
   if (e.press && !e.jamDone && t > 0.05 && dist(e, m) < 1.6) {
     e.jamDone = true;
-    const win = (e.r.str * 0.6 + e.r.agi * 0.4) - (m.r.str * 0.5 + m.r.agi * 0.5) + S.rng.gauss(0, 12);
+    const win = (e.r.press * 0.7 + e.r.agi * 0.3) - (m.r.str * 0.6 + m.r.route * 0.2 + m.r.agi * 0.2) + S.rng.gauss(0, 12);
     if (win > 0) { m.jamUntil = t + clamp(0.15 + win * 0.012, 0.15, 0.55); }
     else { e.stunUntil = t + clamp(0.1 - win * 0.01, 0.1, 0.5); event(S, `${m.pl.name} beats the press!`); }
   }
   // delayed read of the receiver (reaction time)
-  const lag = Math.round(clamp(e.react, 0.1, 0.5) / DT);
+  // crisp route runners buy extra separation against lesser cover players
+  const lag = Math.round(clamp(e.react + Math.max(0, m.r.route - e.r.cover) * 0.003, 0.1, 0.55) / DT);
   const hist = m.hist;
   const h = hist[Math.max(0, hist.length - 1 - lag)] || [m.x, m.y];
   const h2 = hist[Math.max(0, hist.length - 2 - lag)] || h;
@@ -1110,7 +1110,7 @@ function zoneCover(S, e) {
   const dropping = t < (z.deep ? 0.9 : 0.7);
   // receivers threatening my zone
   let threat = null, tscore = -Infinity;
-  for (const r of [O.WR1, O.WR2, O.TE, O.RB]) {
+  for (const r of [O.WR, O.FX, O.RB]) {
     if (r.role !== 'route' && r.role !== 'target') continue;
     const dy = Math.abs(r.y - z.y);
     if (dy > z.halfW + 2) continue;
@@ -1196,9 +1196,9 @@ function escortReturn(S, e) {
 // Blocking engagements
 function power(e, kind, isDef) {
   const r = e.r;
-  if (kind === 'pass') return isDef ? r.str * 0.55 + r.agi * 0.25 + r.awr * 0.2 : r.str * 0.5 + r.tgh * 0.35 + r.awr * 0.15;
-  if (kind === 'run') return isDef ? r.str * 0.6 + r.tgh * 0.25 + r.awr * 0.15 : r.str * 0.65 + r.tgh * 0.2 + r.awr * 0.15 + 3; // +3: blocking angles/leverage
-  return isDef ? r.str * 0.5 + r.agi * 0.3 + r.awr * 0.2 : r.str * 0.5 + r.agi * 0.2 + r.awr * 0.1; // stalk
+  if (kind === 'pass') return isDef ? r.rushPow * 0.6 + r.agi * 0.2 + r.rushFin * 0.2 : r.passBlk * 0.7 + r.tech * 0.15 + r.awr * 0.15;
+  if (kind === 'run') return isDef ? r.runStop * 0.65 + r.rushPow * 0.2 + r.awr * 0.15 : r.runBlk * 0.7 + r.tech * 0.15 + r.awr * 0.15;
+  return isDef ? r.runStop * 0.5 + r.agi * 0.3 + r.awr * 0.2 : r.runBlk * 0.6 + r.agi * 0.2 + r.awr * 0.2; // stalk
 }
 
 function engage(S, blk, def, kind) {
@@ -1207,7 +1207,7 @@ function engage(S, blk, def, kind) {
   const diff = power(def, kind, true) - power(blk, kind, false) + (def.mass - blk.mass) * 0.08 + S.rng.gauss(0, 7);
   const p = { a: blk, d: def, kind, t0: S.t, diff, cx: (blk.x + def.x) / 2, cy: (blk.y + def.y) / 2 };
   // pass rush 'quick win': a rep can be lost at the snap (speed rush, swim, bull)
-  if (kind === 'pass' && S.rng.chance(clamp(0.25 + diff * 0.009, 0.06, 0.5))) p.winAt = S.t + S.rng.range(0.35, 1.3);
+  if (kind === 'pass' && S.rng.chance(clamp(0.25 + diff * 0.009 + (def.r.rushFin - 60) * 0.004, 0.06, 0.5))) p.winAt = S.t + S.rng.range(0.35, 1.3);
   blk.engaged = def.engaged = p;
   S.pairs.push(p);
 }
@@ -1239,6 +1239,7 @@ function updatePairs(S) {
     if (kind === 'pass') rate = 0.3 + Math.max(0, p.diff) * 0.025 + (held > 1.5 ? 0.85 : 0) + (S.ball.holder === S.O.QB && dist(d, S.O.QB) < 1.6 ? 2.0 : 0);
     else if (kind === 'run') rate = 0.1 + Math.max(0, p.diff) * 0.012 + (S.carrier && dist(d, S.carrier) < 2.0 ? 0.15 + Math.max(0, p.diff) * 0.02 : 0);
     else rate = 0.5 + Math.max(0, p.diff) * 0.02 + (S.carrier && dist(d, S.carrier) < 2 ? 1.2 : 0);
+    if (kind !== 'stalk') rate *= 1.25 - a.r.tech * 0.005; // technique sustains blocks
     if (S.carrier && S.carrier.side === 'O' && ((S.carrier.x - p.cx) > 3)) rate += 2; // runner is past
     if (S.rng.chance(rate * DT) || (p.winAt && S.t >= p.winAt)) {
       if (p.winAt && S.t >= p.winAt) event(S, `${d.pl.name} beats ${a.pl.name}!`);
@@ -1303,6 +1304,7 @@ function chooseHeading(S, c, g) {
     }
     if (wantOOB) score += (c.y < W / 2 ? -dy : dy) * 0.5;
     if (prev) score += (dx * prev.dx + dy * prev.dy) * 0.25; // smoothness
+    if (c.r.vision < 99) score += S.rng.gauss(0, (100 - c.r.vision) * 0.004); // vision: seeing the right hole
     if (score > bestScore) { bestScore = score; best = { dx, dy }; }
   }
   return best;
@@ -1333,7 +1335,7 @@ function checkCarrier(S) {
     o.lastTackleTry = S.t;
     const helpers = near.filter((x) => x !== o).length;
     const tr = o.r, cr = c.r;
-    let p = 0.91 + (tr.str * 0.45 + tr.awr * 0.25 + tr.spd * 0.3 - cr.agi * 0.35 - cr.tgh * 0.35 - cr.str * 0.3) * 0.012;
+    let p = 0.91 + (tr.tackle * 0.45 + tr.awr * 0.25 + tr.spd * 0.3 - cr.elu * 0.35 - cr.tgh * 0.35 - cr.str * 0.3) * 0.012;
     p += (o.mass - c.mass) * 0.003 + helpers * 0.08;
     if (c.pos === 'QB' && S.ball.holder === c && !S.scramble && c.side === 'O') p += 0.08;
     p = clamp(p, 0.45, 0.98);
@@ -1341,10 +1343,10 @@ function checkCarrier(S) {
     if (S.rng.chance(p)) {
       S.tacklers = [o, ...near.filter((x) => x !== o && dist(x, c) < 1.4).slice(0, 1)];
       // fumble?
-      const pF = 0.009 + Math.max(0, tr.str - cr.tgh) * 0.00035;
+      const pF = 0.009 + Math.max(0, tr.tackle - cr.tgh) * 0.00035;
       if (S.rng.chance(pF)) return fumble(S, c, o);
       // fall forward
-      const fall = clamp(0.5 + (cr.str + c.mass - tr.str - o.mass) * 0.015, 0, 1.6);
+      const fall = clamp(0.5 + (cr.str + c.mass - tr.tackle - o.mass) * 0.015, 0, 1.6);
       const moving = (c.vx * g) > 1;
       c.x += g * (moving ? fall : fall * 0.3);
       if (c.side === 'O' && c.x >= 100) return endPlay(S, { type: 'td', reach: true });
@@ -1356,7 +1358,7 @@ function checkCarrier(S) {
     if (!S.brokenTackles) S.brokenTackles = 0;
     S.brokenTackles++;
     credit(S, c, 'brk', 1);
-    event(S, cr.agi > cr.str ? `${c.pl.name} jukes ${o.pl.name}!` : `${c.pl.name} breaks the tackle of ${o.pl.name}!`);
+    event(S, cr.elu > cr.str ? `${c.pl.name} jukes ${o.pl.name}!` : `${c.pl.name} breaks the tackle of ${o.pl.name}!`);
   }
 }
 
@@ -1367,7 +1369,7 @@ function checkSack(S) {
     const d = dist(o, qb);
     if (d > 1.05 || S.t - o.lastTackleTry < 0.6) continue;
     o.lastTackleTry = S.t;
-    const escape = clamp(0.08 + (qb.r.agi * 0.5 + qb.r.str * 0.5 - o.r.str * 0.6 - o.r.spd * 0.2) * 0.005, 0.03, 0.25);
+    const escape = clamp(0.08 + (qb.r.agi * 0.5 + qb.r.tgh * 0.5 - o.r.rushPow * 0.6 - o.r.spd * 0.2) * 0.005, 0.03, 0.25);
     if (S.rng.chance(escape)) {
       o.stunUntil = S.t + 0.6;
       event(S, `${qb.pl.name} escapes ${o.pl.name}!`);
@@ -1445,7 +1447,7 @@ function finalize(S) {
   const { los } = S;
   const out = {
     frames: S.frames, events: S.events, design: S.design, duration: S.t,
-    cast: S.ents.map((e) => ({ pid: e.pl.id, side: e.side, pos: e.pos })),
+    cast: S.ents.map((e) => ({ pid: e.pl.id, side: e.side, pos: e.pos, card: e.pl.pos })),
     stats: S.stats, kind: S.play.type, playName: S.play.name, defName: S.dcall.name,
     yards: 0, endX: los, td: false, defTD: false, safety: false, turnover: false,
     incomplete: false, oob: false, clockStops: false, desc: null,

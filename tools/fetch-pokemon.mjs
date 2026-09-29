@@ -1,60 +1,88 @@
-// Scrapes base stats / types / size for every rostered Pokemon from pokemondb.net
-// and writes js/data/pokemon.js. Run: node tools/fetch-pokemon.mjs
-import { writeFileSync } from 'node:fs';
-import { TEAMS } from '../js/data/teams.js';
+// Builds the card database from pokemondb.net: every species' base stats, types,
+// height, weight and sprite slugs. Writes js/data/pokemon.js.
+// Run: node tools/fetch-pokemon.mjs
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 
 const SPRITE = 'https://img.pokemondb.net/sprites';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const OUT = new URL('../js/data/pokemon.js', import.meta.url);
+const CACHE = new URL('./.pokemon-cache.json', import.meta.url);
 
-const slugs = [...new Set(TEAMS.flatMap((t) => Object.values(t.roster).map((r) => r.mon)))];
-
-function firstMatch(html, re) {
-  const m = html.match(re);
-  return m ? m[1] : null;
-}
-
-function statAfter(html, label) {
-  const i = html.indexOf(`<th>${label}</th>`);
-  if (i < 0) throw new Error(`missing ${label}`);
-  const m = html.slice(i).match(/<td class="cell-num">(\d+)<\/td>/);
-  return Number(m[1]);
-}
-
-async function exists(url) {
-  const res = await fetch(url, { method: 'HEAD' });
-  return res.ok;
-}
-
-async function spriteSlug(set, slug, ext) {
-  for (const s of [slug, `${slug}-midday`, `${slug}-disguised`, `${slug}-male`, `${slug}-normal`, `${slug}-average`, `${slug}-standard`]) {
-    if (await exists(`${SPRITE}/${set}/${s}.${ext}`)) return s;
+async function get(url, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return await res.text();
+      if (res.status === 404) return null;
+    } catch { /* retry */ }
+    await sleep(800 * (i + 1));
   }
-  return null;
+  throw new Error(`failed: ${url}`);
 }
+async function exists(url) {
+  try { return (await fetch(url, { method: 'HEAD' })).ok; } catch { return false; }
+}
+const decode = (s) => s.replace(/&#039;|&#39;/g, "'").replace(/&eacute;/g, 'é').replace(/&amp;/g, '&').replace(/&#8217;/g, '’');
 
+// ---- 1. species list + base stats from the "all" table (first row per dex number)
+const all = await get('https://pokemondb.net/pokedex/all');
+const rows = all.split('<tr>').slice(1);
+const species = new Map();
+for (const row of rows) {
+  const dexM = row.match(/infocard-cell-data">(\d+)</);
+  const nameM = row.match(/class="ent-name" href="\/pokedex\/([^"]+)"[^>]*>([^<]+)</);
+  if (!dexM || !nameM) continue;
+  const dex = Number(dexM[1]);
+  if (species.has(dex)) continue; // skip alternate forms (Mega, regional, etc.)
+  const types = [...row.split('</td>')[2].matchAll(/type-icon type-(\w+)/g)].map((m) => m[1]);
+  const nums = [...row.matchAll(/<td class="cell-num">(\d+)<\/td>/g)].map((m) => Number(m[1]));
+  if (nums.length < 6) continue;
+  species.set(dex, { slug: nameM[1], name: decode(nameM[2]), dex, types, s: nums.slice(0, 6) });
+}
+console.log(`species: ${species.size}`);
+
+// ---- 2. per-species page for height/weight, and a sprite check (cached between runs)
+const cache = existsSync(CACHE) ? JSON.parse(readFileSync(CACHE, 'utf8')) : {};
+const list = [...species.values()];
+let done = 0;
+async function worker(queue) {
+  for (let sp; (sp = queue.shift());) {
+    if (!cache[sp.slug]) {
+      const html = await get(`https://pokemondb.net/pokedex/${sp.slug}`);
+      const h = html && Number((html.match(/<th>Height<\/th>\s*<td>([\d.]+)&nbsp;m/) || [])[1]);
+      const w = html && Number((html.match(/<th>Weight<\/th>\s*<td>([\d.]+)&nbsp;kg/) || [])[1]);
+      const home = (await exists(`${SPRITE}/home/normal/${sp.slug}.png`)) ? sp.slug : null;
+      cache[sp.slug] = { h: h || 1, w: w || 30, home };
+      await sleep(120);
+    }
+    if (++done % 50 === 0) { console.log(`${done}/${list.length}`); writeFileSync(CACHE, JSON.stringify(cache)); }
+  }
+}
+const queue = [...list];
+await Promise.all(Array.from({ length: 6 }, () => worker(queue)));
+writeFileSync(CACHE, JSON.stringify(cache));
+
+// ---- 3. write compact data. s = [hp, atk, def, spa, spd, spe]
 const out = {};
-for (const slug of slugs) {
-  const res = await fetch(`https://pokemondb.net/pokedex/${slug}`);
-  if (!res.ok) throw new Error(`${slug}: HTTP ${res.status}`);
-  const html = await res.text();
-  const name = firstMatch(html, /<h1>([^<]+)<\/h1>/).trim();
-  const dex = Number(firstMatch(html, /<th>National (?:№|&#8470;)<\/th>\s*<td><strong>(\d+)<\/strong>/));
-  const typeCell = html.slice(html.indexOf('<th>Type</th>')).split('</td>')[0];
-  const types = [...typeCell.matchAll(/type-icon type-(\w+)/g)].map((m) => m[1]);
-  const height = Number(firstMatch(html, /<th>Height<\/th>\s*<td>([\d.]+)&nbsp;m/));
-  const weight = Number(firstMatch(html, /<th>Weight<\/th>\s*<td>([\d.]+)&nbsp;kg/));
-  const stats = {
-    hp: statAfter(html, 'HP'), atk: statAfter(html, 'Attack'), def: statAfter(html, 'Defense'),
-    spa: statAfter(html, 'Sp. Atk'), spd: statAfter(html, 'Sp. Def'), spe: statAfter(html, 'Speed'),
-  };
-  const home = await spriteSlug('home/normal', slug, 'png');
-  const bw = dex <= 649 ? await spriteSlug('black-white/anim/normal', slug, 'gif') : null;
-  out[slug] = { name: name.replace(/&#039;|&#39;/g, "'").replace(/&eacute;/g, 'é'), dex, types, height, weight, stats, sprites: { home, bw } };
-  console.log(`${slug.padEnd(12)} #${dex} ${types.join('/')} ${JSON.stringify(stats)} home=${home} bw=${bw}`);
-  await sleep(250);
+for (const sp of list) {
+  const c = cache[sp.slug];
+  out[sp.slug] = { n: sp.name, d: sp.dex, t: sp.types, h: c.h, w: c.w, s: sp.s, ...(c.home && c.home !== sp.slug ? { hs: c.home } : {}), ...(c.home ? {} : { nh: 1 }) };
 }
+const body = Object.entries(out).map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`).join(',\n');
+writeFileSync(OUT, `// AUTO-GENERATED by tools/fetch-pokemon.mjs from pokemondb.net — do not edit by hand.
+// n=name d=dex t=types h=height(m) w=weight(kg) s=[hp,atk,def,spa,spd,spe] hs=HOME sprite slug override, nh=no HOME sprite
+const RAW = {\n${body}\n};
 
-const header = '// AUTO-GENERATED by tools/fetch-pokemon.mjs from pokemondb.net — do not edit by hand.\n';
-writeFileSync(new URL('../js/data/pokemon.js', import.meta.url),
-  `${header}export const POKEMON = ${JSON.stringify(out, null, 1)};\n`);
-console.log(`Wrote ${slugs.length} Pokemon.`);
+export const POKEMON = {};
+for (const [slug, p] of Object.entries(RAW)) {
+  const [hp, atk, def, spa, spd, spe] = p.s;
+  POKEMON[slug] = {
+    slug, name: p.n, dex: p.d, types: p.t, height: p.h, weight: p.w,
+    stats: { hp, atk, def, spa, spd, spe },
+    bst: hp + atk + def + spa + spd + spe,
+    sprites: { home: p.nh ? null : (p.hs || slug), bw: p.d <= 649 ? slug : null },
+  };
+}
+export const POKEMON_LIST = Object.values(POKEMON).sort((a, b) => a.dex - b.dex);
+`);
+console.log(`Wrote ${list.length} Pokémon. Missing HOME sprites: ${list.filter((s) => !cache[s.slug].home).map((s) => s.slug).join(', ') || 'none'}`);

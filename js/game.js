@@ -1,8 +1,7 @@
 // Game state machine: clock, downs, possession, scoring, special teams, stats.
 // DOM-free so it can also run headless (see tools/sim-test.mjs).
 import { RNG } from './rng.js';
-import { buildPlayer, applySynergies } from './ratings.js';
-import { OFF_POS, DEF_POS } from './data/teams.js';
+import { TeamDepth } from './depth.js';
 import { simulatePlay } from './sim/playSim.js';
 import { specialFrames } from './sim/special.js';
 import { callOffense, callDefense, fourthDown, patDecision, KNEEL, SPIKE } from './playcaller.js';
@@ -20,7 +19,7 @@ const blankLine = () => ({
   kick: { fgm: 0, fga: 0, lng: 0, xpm: 0, xpa: 0 },
   punt: { n: 0, yds: 0, lng: 0, in20: 0 },
   ret: { kr: 0, kry: 0, pr: 0, pry: 0, td: 0 },
-  brk: 0, fum: 0,
+  brk: 0, fum: 0, snaps: 0,
 });
 const blankTeam = () => ({ first: 0, plays: 0, yds: 0, passYds: 0, rushYds: 0, to: 0, pen: 0, penY: 0, top: 0,
   third: [0, 0], fourth: [0, 0], sacked: 0, rz: [0, 0], twoPt: [0, 0] });
@@ -31,20 +30,9 @@ export class Game {
     this.rng = new RNG(seed);
     this.teams = [away, home];
     this.players = {};
-    this.lineups = this.teams.map((t) => {
-      const off = {}, def = {};
-      for (const pos of OFF_POS) off[pos] = buildPlayer(t, pos, t.roster[pos]);
-      for (const pos of DEF_POS) def[pos] = buildPlayer(t, pos, t.roster[pos]);
-      const K = buildPlayer(t, 'K', t.roster.K);
-      for (const p of [...Object.values(off), ...Object.values(def), K]) this.players[p.id] = p;
-      const offR = applySynergies(OFF_POS.map((p) => off[p]), 'offense');
-      const defR = applySynergies(DEF_POS.map((p) => def[p]), 'defense');
-      return {
-        off, def, K,
-        offRatings: Object.fromEntries(OFF_POS.map((p, i) => [p, offR[i]])),
-        defRatings: Object.fromEntries(DEF_POS.map((p, i) => [p, defR[i]])),
-      };
-    });
+    this.depth = this.teams.map((t) => new TeamDepth(t, this.players));
+    this.teamOf = {};
+    this.depth.forEach((d, i) => { for (const c of d.all()) this.teamOf[c.id] = i; });
     this.stats = { players: {}, teams: [blankTeam(), blankTeam()] };
     for (const id in this.players) this.stats.players[id] = blankLine();
     this.tendency = [{ plays: 0, pass: 0 }, { plays: 0, pass: 0 }];
@@ -96,7 +84,8 @@ export class Game {
       down: this.down, toGo: this.toGo, ballOn: this.ballOn, quarter: q, clock: this.clock,
       secsHalf, secsGame, diff, twoMinute, killClock,
       timeouts: this.timeouts[i], oppTimeouts: this.timeouts[1 - i],
-      lastPlayId: this.lastPlayId, offQB: this.lineups[i].off.QB,
+      lastPlayId: this.lastPlayId, offQB: this.depth[i].QB,
+      personnel: this.depth[i].personnel, front: this.depth[1 - i].front,
     };
   }
 
@@ -129,6 +118,7 @@ export class Game {
     else rec = this.doScrimmage();
     if (!rec) return this.next();
     rec.before = rec.before || before;
+    if (rec.type !== 'penalty' && rec.cast) this.applyFatigue(rec);
     rec.notes = [...(rec.notes || []), ...this.notes];
     this.notes = [];
     this.checkQuarterEnd(rec);
@@ -136,6 +126,30 @@ export class Game {
     rec.notes.push(...this.notes);
     this.notes = [];
     return rec;
+  }
+
+  // Energy: everyone who played drains by effort (distance run, blocks fought, trench work);
+  // everyone else on both rosters rests. HP (stamina) scales both.
+  applyFatigue(rec) {
+    const involved = new Set();
+    const frames = rec.frames;
+    rec.cast.forEach((c, idx) => {
+      const t = this.teamOf[c.pid];
+      if (t == null) return;
+      const card = this.players[c.pid];
+      if (card.pos === 'K') { involved.add(c.pid); return; }
+      let dist = 0, eng = 0;
+      for (let f = 1; f < frames.length; f++) {
+        const a = frames[f - 1].p[idx], b = frames[f].p[idx];
+        dist += Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (b[2] === 1) eng++;
+      }
+      const trench = card.pos === 'OL' || card.pos === 'DL';
+      this.depth[t].drain(card, 0.55 + dist * 0.083 + eng * 0.011 + (trench ? 0.7 : 0));
+      if (rec.type === 'scrimmage') this.stats.players[c.pid].snaps++;
+      involved.add(c.pid);
+    });
+    for (const d of this.depth) d.restExcept(involved, 2.4);
   }
 
   checkQuarterEnd(rec) {
@@ -147,15 +161,18 @@ export class Game {
     if (q === 1 || q === 3) {
       this.note(`End of the ${q === 1 ? '1st' : '3rd'} quarter.`, 'period');
       this.quarter++; this.clock = QUARTER_SECS;
+      for (const d of this.depth) d.recoverAll(8);
     } else if (q === 2) {
       this.endDrive('End of half');
       this.note(`Halftime: ${this.scoreText()}`, 'period');
       this.quarter = 3; this.clock = QUARTER_SECS; this.timeouts = [3, 3];
+      for (const d of this.depth) d.recoverAll(45);
       this.phase = 'kickoff'; this.kicking = this.openingReceiver; this.kickFrom = 35;
     } else if (q === 4 && this.score[0] === this.score[1]) {
       this.endDrive('End of regulation');
       this.note(`End of regulation — tied ${this.score[0]}-${this.score[1]}. Overtime!`, 'period');
       this.quarter = 5; this.clock = QUARTER_SECS; this.timeouts = [2, 2];
+      for (const d of this.depth) d.recoverAll(20);
       const recv = this.rng.chance(0.5) ? 0 : 1;
       this.note(`${this.teams[recv].name} win the OT toss.`);
       this.phase = 'kickoff'; this.kicking = 1 - recv; this.kickFrom = 35;
@@ -233,6 +250,7 @@ export class Game {
 
   useTimeout(team, runoff) {
     this.applyRunoff(runoff);
+    for (const d of this.depth) d.recoverAll(3);
     this.timeouts[team]--;
     this.clockRunning = false;
     this.note(`Timeout, ${this.teams[team].name} (${this.timeouts[team]} left).`, 'timeout');
@@ -269,8 +287,10 @@ export class Game {
     let sit = this.situation();
     this.preSnapClock(sit);
     if (this.clock <= 0) { this.clock = 0; this.checkQuarterEnd(); return null; }
-    sit = this.situation();
     if (this.pendingWarning) { this.pendingWarning = false; this.note('Two-minute warning.', 'period'); }
+    for (const n of this.depth[i].substitute('O')) this.note(`Sub (${team.abbr}): ${n}`, 'sub');
+    for (const n of this.depth[d].substitute('D')) this.note(`Sub (${dteam.abbr}): ${n}`, 'sub');
+    sit = this.situation();
 
     // clock-management specials
     const remDowns = 4 - this.down;
@@ -282,7 +302,7 @@ export class Game {
     if (sit.spike) return this.doSpike(sit);
 
     // field goal / punt decisions
-    const K = this.lineups[i].K;
+    const K = this.depth[i].K;
     const fgDist = 100 - this.ballOn + 17;
     const inRange = fgDist <= 41 + K.ratings.kpow * 0.15;
     const needFGNow = inRange && sit.secsHalf <= 6 && (this.quarter === 2 || (sit.diff <= 0 && sit.diff >= -3) || this.quarter === 5);
@@ -309,15 +329,15 @@ export class Game {
 
   simArgs(i, play, dcall, sit, overrideBallOn) {
     const d = 1 - i;
-    const L = this.lineups[i], DL = this.lineups[d];
     const ballOn = overrideBallOn ?? this.ballOn;
+    const pers = this.depth[i].personnel;
     let flip = this.ballY <= FIELD_W / 2 ? 1 : -1;
     if (this.rng.chance(0.25)) flip = -flip;
     return {
       rng: this.rng, W: FIELD_W, los: ballOn, ballY: this.ballY, flip,
-      offense: { players: L.off, ratings: L.offRatings },
-      defense: { players: DL.def, ratings: DL.defRatings },
-      play, dcall,
+      offense: { slots: this.depth[i].simOffense(), personnel: pers },
+      defense: { slots: this.depth[d].simDefense() },
+      play, dcall, form: play.forms[pers],
       situation: {
         aggression: this.teams[i].coach.aggression, deepBias: this.teams[i].coach.deepRate - 0.5,
         desperate: sit.secsGame <= 20 && sit.diff < 0 && this.quarter >= 4,
@@ -338,7 +358,7 @@ export class Game {
       type: 'scrimmage', frames: res.frames, cast: res.cast, frameTeam: i, dir: this.dirFor(i), W: FIELD_W,
       design: res.design, losX: los, fdX: Math.min(los + this.toGo, 100), events: res.events,
       presnap: {
-        dd: twoPoint ? 'Two-point try' : dd, spot: this.yardText(los), offCall: `${oc.play.name}`, form: oc.play.form,
+        dd: twoPoint ? 'Two-point try' : dd, spot: this.yardText(los), offCall: `${oc.play.name}`, form: args.form,
         defCall: dc.dcall.name, offReason: oc.reason, defReason: dc.reason, offTeam: i,
       },
     };
@@ -368,7 +388,7 @@ export class Game {
     if (res.penalty?.type === 'DPI' || holding) {
       let text;
       if (holding) {
-        const off = this.lineups[i].off[this.rng.pick(['C', 'G', 'TE'])];
+        const off = this.rng.pick(this.depth[i].offense().filter((c) => c.pos === 'OL' || c.pos === 'TE'));
         const yds = Math.min(10, Math.floor(los / 2));
         this.ballOn = los - yds; this.toGo += yds;
         T.pen++; T.penY += yds;
@@ -444,7 +464,7 @@ export class Game {
           (res.pbu ? ` (broken up by ${nm(res.pbu)}).` : res.drop ? ' — dropped!' : res.miss ? ` — ${res.miss}.` : '.');
       }
     } else if (res.kind === 'sack') {
-      const qb = this.lineups[i].off.QB.id;
+      const qb = res.cast.find((c) => c.side === 'O' && c.pos === 'QB').pid;
       S(qb).pass.sck++; S(qb).pass.sckY += -yards; T.sacked++;
       T.yds += yards; T.passYds += yards;
       if (res.sack) { S(res.sack).def.sck++; S(res.sack).def.tfl++; }
@@ -555,13 +575,13 @@ export class Game {
     let text;
     if (side === 'O') {
       const yds = Math.min(5, Math.floor(this.ballOn / 2));
-      const who = this.lineups[i].off[this.rng.pick(['C', 'G', 'TE', 'WR1', 'WR2'])];
+      const who = this.rng.pick(this.depth[i].offense().filter((c) => c.pos !== 'QB'));
       this.ballOn -= yds; this.toGo += yds;
       this.stats.teams[i].pen++; this.stats.teams[i].penY += yds;
       text = `PENALTY: ${name}, ${who.name} (${team(this, i)}), ${yds} yards. ${this.ddText()}.`;
     } else {
       const yds = Math.min(5, Math.floor((100 - this.ballOn) / 2));
-      const who = this.lineups[d].def[this.rng.pick(['DL1', 'DL2', 'LB1', 'LB2'])];
+      const who = this.rng.pick(this.depth[d].defense().filter((c) => c.pos !== 'DB'));
       this.ballOn += yds; this.toGo -= yds;
       this.stats.teams[d].pen++; this.stats.teams[d].penY += yds;
       if (this.toGo <= 0) { this.down = 1; this.toGo = Math.min(10, 100 - this.ballOn); this.stats.teams[i].first++; }
@@ -585,7 +605,7 @@ export class Game {
   staticFrames(i, n, mutate) {
     // a formation snapshot used for kneels/spikes
     const sit = this.situation();
-    const args = this.simArgs(i, { ...PLAYS_SINGLEBACK_PASS }, DEF_C1, sit);
+    const args = this.simArgs(i, FORMATION_ONLY, DEF_C1, sit);
     const res = simulatePlay(args);
     const f0 = res.frames[0];
     const frames = [];
@@ -605,7 +625,7 @@ export class Game {
       fr.b = [qb[0], qb[1], 0.6, 0];
     });
     this.runPlayClock(2);
-    const qb = this.lineups[i].off.QB;
+    const qb = this.depth[i].QB;
     this.stats.players[qb.id].rush.car++; this.stats.players[qb.id].rush.yds -= 1;
     this.stats.teams[i].rushYds -= 1; this.stats.teams[i].yds -= 1; this.stats.teams[i].plays++;
     const dd = this.ddText();
@@ -629,7 +649,7 @@ export class Game {
       fr.b = s < 0.4 ? [qb[0], qb[1], 1, 0] : [qb[0] + 0.8, qb[1], 0.2, -1];
     });
     this.runPlayClock(1);
-    const qb = this.lineups[i].off.QB;
+    const qb = this.depth[i].QB;
     this.stats.players[qb.id].pass.att++;
     const dd = this.ddText();
     const los = this.ballOn;
@@ -644,20 +664,20 @@ export class Game {
 
   // ------------------------------------------------------------------------
   // Special teams
-  returnerFor(t, pool) {
-    const L = this.lineups[t];
-    const all = { ...L.off, ...L.def };
-    return pool.map((p) => all[p]).sort((a, b) => b.ratings.spd - a.ratings.spd)[0];
+  returnerFor(t, kinds) {
+    const D = this.depth[t];
+    return [...D.offense(), ...D.defense()].filter((c) => kinds.includes(c.pos)).sort((a, b) => b.ratings.spd - a.ratings.spd)[0];
   }
 
   doKickoff() {
     const k = this.kicking, r = 1 - k;
-    const K = this.lineups[k].K;
-    const kl = this.lineups[k], rl = this.lineups[r];
+    const K = this.depth[k].K;
+    const kl = this.depth[k], rl = this.depth[r];
     const kickX = this.kickFrom;
-    const kickers = [K, kl.def.LB1, kl.def.LB2, kl.def.CB1, kl.def.CB2, kl.def.S, kl.def.DL1];
-    const retr = this.returnerFor(r, ['RB', 'WR1', 'WR2']);
-    const receivers = [retr, ...[rl.off.WR1, rl.off.WR2, rl.off.TE, rl.def.LB1, rl.def.CB1, rl.def.S, rl.off.RB].filter((p) => p !== retr)].slice(0, 7);
+    const byCover = (a, b) => b.ratings.spd - a.ratings.spd;
+    const kickers = [K, ...kl.defense().sort(byCover).slice(0, 6)];
+    const retr = this.returnerFor(r, ['RB', 'WR', 'DB']);
+    const receivers = [retr, ...[...rl.offense().filter((c) => c.pos !== 'QB' && c.pos !== 'OL'), ...rl.defense().filter((c) => c.pos !== 'DL')].filter((p) => p !== retr)].slice(0, 7);
     const sgm = this.situation(k);
     const onside = this.quarter >= 4 && sgm.diff < 0 && sgm.diff >= -16 && sgm.secsGame <= 150;
     const S = (id) => this.stats.players[id];
@@ -722,13 +742,12 @@ export class Game {
 
   doPunt(reason) {
     const i = this.poss, d = 1 - i;
-    const K = this.lineups[i].K;
-    const L = this.lineups[i], DL = this.lineups[d];
+    const K = this.depth[i].K;
     const los = this.ballOn;
     const S = (id) => this.stats.players[id];
-    const retr = this.returnerFor(d, ['CB1', 'CB2', 'S', 'RB', 'WR1']);
-    const kickers = [K, L.off.C, L.off.G, L.off.TE, L.off.WR1, L.off.WR2, L.off.RB];
-    const receivers = [retr, ...[DL.def.DL1, DL.def.DL2, DL.def.LB1, DL.def.LB2, DL.def.CB1, DL.def.CB2, DL.def.S].filter((p) => p !== retr)].slice(0, 7);
+    const retr = this.returnerFor(d, ['DB', 'RB', 'WR']);
+    const kickers = [K, ...this.depth[i].offense().filter((c) => c.pos !== 'QB')];
+    const receivers = [retr, ...this.depth[d].defense().filter((p) => p !== retr)].slice(0, 7);
     const dd = this.ddText();
     const spot = this.yardText(los);
     this.stats.teams[i].plays++;
@@ -796,8 +815,7 @@ export class Game {
 
   doFieldGoal(reason, pat = false) {
     const i = pat ? this.patTeam : this.poss, d = 1 - i;
-    const K = this.lineups[i].K;
-    const L = this.lineups[i], DL = this.lineups[d];
+    const K = this.depth[i].K;
     const los = pat ? 85 : this.ballOn;
     const dist = 100 - los + 17;
     const p = this.fgProb(K, dist);
@@ -811,8 +829,9 @@ export class Game {
     const short = !good && !blocked && dist > 45 && this.rng.chance(0.4);
     const landY = good ? FIELD_W / 2 + this.rng.range(-2, 2) : FIELD_W / 2 + miss * this.rng.range(3.6, 6);
     const landX = short ? 106 : 111;
-    const kickers = [L.off.QB, K, L.off.C, L.off.G, L.off.TE, L.off.RB, L.off.WR1];
-    const receivers = [DL.def.DL1, DL.def.DL2, DL.def.LB1, DL.def.LB2, DL.def.CB1, DL.def.CB2, DL.def.S];
+    const off = this.depth[i].offense();
+    const kickers = [off[0], K, ...off.filter((c) => c.pos === 'OL'), ...off.filter((c) => c.pos !== 'OL' && c.pos !== 'QB')].slice(0, 7);
+    const receivers = this.depth[d].defense();
     const sf = specialFrames({ kind: 'fg', W: FIELD_W, kickX: los, kickY: this.ballY, landX, landY, hang: 0.9 + dist * 0.025, returnEndX: null, kickers, receivers, returnerIdx: null, blocked });
     if (pat) {
       S.kick.xpa++;
@@ -913,5 +932,5 @@ function runDir(endY, ballY) {
 
 // helpers for static frames
 import { PLAY_BY_ID, DEF_BY_ID } from './playbook.js';
-const PLAYS_SINGLEBACK_PASS = { ...PLAY_BY_ID.curlFlat, assign: { WR1: 'block', WR2: 'block', TE: 'block', RB: 'block' }, prog: [] };
+const FORMATION_ONLY = { id: 'formation', name: 'Formation', type: 'pass', drop: 'std', forms: { WR: 'singleback', TE: 'singlebackTE', RB: 'iForm' }, assign: { WR: 'block', FX: 'block', RB: 'block' }, prog: [] };
 const DEF_C1 = DEF_BY_ID.c1;

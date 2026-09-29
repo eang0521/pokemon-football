@@ -40,7 +40,7 @@ export function callOffense(team, sit, rng) {
 
   const isPass = rng.chance(pPass);
   const qbSpd = sit.offQB?.ratings.spd || 60;
-  const candidates = PLAYS.filter((p) => p.type === (isPass ? 'pass' : 'run') && !p.special).map((p) => {
+  const candidates = PLAYS.filter((p) => p.type === (isPass ? 'pass' : 'run') && !p.special && p.forms[sit.personnel || 'WR']).map((p) => {
     let w = 1;
     if (p.type === 'pass') {
       const long = toGo;
@@ -53,7 +53,6 @@ export function callOffense(team, sit, rng) {
       if (p.depth === 'short') w *= 1.5 - coach.deepRate;
       if (p.pa) w *= down <= 2 && !sit.twoMinute ? coach.paRate * 3 : 0.25;
       if (p.id === 'fade') w *= ballOn >= 88 ? 3 : 0;
-      if (p.form === 'jumbo' && ballOn < 88) w = 0;
       if (ballOn >= 85 && p.depth === 'deep' && p.id !== 'fade') w *= 0.5;
       if (sit.twoMinute && p.tags?.includes('sideline')) w *= 2.5;
       if (p.screen) w *= down === 2 && toGo >= 7 ? 1.6 : 0.5;
@@ -66,7 +65,9 @@ export function callOffense(team, sit, rng) {
       if (p.scheme === 'draw') w *= toGo >= 7 ? 0.5 : 0.12;
       if (p.scheme === 'counter') w *= 0.5;
       if (p.scheme === 'read') w *= qbSpd >= 72 ? 1.3 : 0.15;
-      if (p.scheme === 'sneak') w *= toGo <= 1 ? 3 : 0;
+      if (p.carrier === 'QB') w *= toGo <= 1 ? 3 : 0;
+      if (p.id === 'fbDive') w *= toGo <= 2 ? 2.5 : 0.4;
+      if (p.id === 'iso') w *= toGo <= 3 ? 1.6 : 1;
       if (p.id === 'glPower') w *= ballOn >= 95 || toGo <= 1 ? 3 : 0;
       if (p.id === 'outsideZone' || p.id === 'toss') w *= toGo <= 2 ? 0.5 : 1;
     }
@@ -104,6 +105,10 @@ export function callDefense(team, sit, oppTendency, rng) {
     if (ballOn >= 90 && d.tags.includes('man')) w *= 1.3;
     if (d.id === 'c1spy') w *= (sit.offQB?.ratings.spd || 60) >= 75 ? 2 : 0.3;
     if (d.id === 'cloud' && toGo <= 6) w *= 1.3;
+    // front: three DL already bring pressure; three DBs lean toward coverage
+    if (sit.front === 'DL' && d.tags.includes('blitz')) w *= 0.7;
+    if (sit.front === 'DB' && d.tags.includes('zone')) w *= 1.15;
+    if (sit.front === 'LB' && d.id === 'runBlitz') w *= 1.3;
     if (sit.twoMinute && d.id === 'c4') w *= 1.6;
     return { w, d };
   });

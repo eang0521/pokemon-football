@@ -1,7 +1,11 @@
-import { TEAMS, OFF_POS, DEF_POS } from './data/teams.js';
+import { TEAMS } from './data/teams.js';
 import { POKEMON } from './data/pokemon.js';
 import { Game } from './game.js';
 import { FieldRenderer, spriteUrl } from './render.js';
+import { STAT_KEYS, STAT_LABELS } from './ratings.js';
+import { STARTERS, BENCH, parseCard, personnelOf, frontOf, PERSONNEL, FRONTS } from './roster.js';
+import { loadCustomTeams } from './storage.js';
+import { openBuilder, wireBuilder, TYPE_COLORS } from './builder.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -11,38 +15,48 @@ const store = {
   set(k, v) { try { localStorage.setItem(`pgf:${k}`, JSON.stringify(v)); } catch { /* ignore */ } },
 };
 
-const TYPE_COLORS = {
-  normal: '#9fa19f', fire: '#e62829', water: '#2980ef', electric: '#fac000', grass: '#3fa129', ice: '#3dcef3',
-  fighting: '#ff8000', poison: '#9141cb', ground: '#915121', flying: '#81b9ef', psychic: '#ef4179', bug: '#91a119',
-  rock: '#afa981', ghost: '#704170', dragon: '#5060e1', dark: '#624d4e', steel: '#60a1b8', fairy: '#ef70ef',
-};
 const typeChips = (types) => `<span class="types">${types.map((t) => `<span class="type" style="background:${TYPE_COLORS[t] || '#666'}">${t}</span>`).join('')}</span>`;
 const clockText = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const qText = (q) => (q === 5 ? 'OT' : ['1st', '2nd', '3rd', '4th'][q - 1]);
+const allTeams = () => [...loadCustomTeams(), ...TEAMS];
+const findTeam = (id) => allTeams().find((t) => t.id === id);
+
+function showScreen(name) {
+  for (const id of ['setup', 'builder', 'game']) $(`#${id}`).classList.toggle('hidden', id !== name);
+  $('#btn-new').classList.toggle('hidden', name === 'setup');
+  $('#btn-new').textContent = name === 'builder' ? 'Back to teams' : 'New game';
+  window.scrollTo(0, 0);
+}
 
 // ==========================================================================
 // Setup screen
 const sel = { away: null, home: null };
 function renderTeamGrid() {
   const grid = $('#team-grid');
-  grid.innerHTML = TEAMS.map((t) => {
-    const stars = ['QB', 'RB', 'WR1'].map((p) => POKEMON[t.roster[p].mon]);
+  grid.innerHTML = allTeams().map((t) => {
+    const stars = ['QB', 'RB', 'WR'].map((k) => POKEMON[parseCard(t.roster[k], k)?.mon]).filter(Boolean);
     const c = t.coach;
     const meter = (label, v) => `<span>${label}</span><div class="meter"><span style="width:${Math.round(v * 100)}%"></span></div>`;
-    return `<button class="team-card" data-team="${t.id}" type="button">
+    return `<div class="team-card" data-team="${t.id}" role="button" tabindex="0">
       <div class="band" style="background:linear-gradient(120deg, ${t.colors.primary}, ${t.colors.primary} 60%, ${t.colors.secondary})">
-        ${stars.map((p) => `<img src="https://img.pokemondb.net/sprites/home/normal/${p.sprites.home}.png" alt="${esc(p.name)}" loading="lazy" referrerpolicy="no-referrer">`).join('')}
-        <span class="abbr">${t.abbr}</span>
+        ${stars.map((p) => `<img src="${spriteUrl(p)}" alt="${esc(p.name)}" loading="lazy" referrerpolicy="no-referrer">`).join('')}
+        <span class="abbr">${esc(t.abbr)}</span>
+        ${t.custom ? '<span class="custom-badge">Custom</span>' : ''}
       </div>
       <div class="info">
-        <div class="tname">${t.city} ${t.name}</div>
-        <div class="coach">${c.name} · ${c.style}</div>
+        <div class="tname">${esc(t.city)} ${esc(t.name)}</div>
+        <div class="coach">${esc(c.name)} · ${esc(c.style)}</div>
+        <div class="sets"><span class="set">${PERSONNEL[personnelOf(t.roster)].name}</span><span class="set">${FRONTS[frontOf(t.roster)].name}</span></div>
         <div class="meters">${meter('Pass', c.passRate)}${meter('Aggressive', c.aggression)}${meter('Blitz', c.blitzRate)}${meter('Man cov.', c.manRate)}</div>
-        <div class="pick"></div>
+        <div class="card-foot"><span class="pick"></span>${t.custom ? `<button type="button" class="ghost edit" data-edit="${t.id}">Edit</button>` : ''}</div>
       </div>
-    </button>`;
+    </div>`;
   }).join('');
-  grid.querySelectorAll('.team-card').forEach((el) => el.addEventListener('click', () => pickTeam(el.dataset.team)));
+  grid.querySelectorAll('.team-card').forEach((el) => {
+    el.addEventListener('click', (e) => { if (e.target.closest('[data-edit]')) return; pickTeam(el.dataset.team); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickTeam(el.dataset.team); } });
+  });
+  grid.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editTeam(findTeam(b.dataset.edit))));
   syncSetup();
 }
 function pickTeam(id) {
@@ -55,7 +69,8 @@ function pickTeam(id) {
 }
 function syncSetup() {
   for (const side of ['away', 'home']) {
-    const t = TEAMS.find((x) => x.id === sel[side]);
+    if (sel[side] && !findTeam(sel[side])) sel[side] = null;
+    const t = findTeam(sel[side]);
     const slot = $(`#slot-${side}`);
     slot.classList.toggle('filled', !!t);
     slot.querySelector('.slot-name').textContent = t ? `${t.city} ${t.name}` : 'Select a team';
@@ -70,10 +85,19 @@ function syncSetup() {
   $('#btn-start').disabled = !(sel.away && sel.home);
 }
 $('#btn-random').addEventListener('click', () => {
-  const ids = TEAMS.map((t) => t.id).sort(() => Math.random() - 0.5);
+  const ids = allTeams().map((t) => t.id).sort(() => Math.random() - 0.5);
   sel.away = ids[0]; sel.home = ids[1];
   syncSetup();
 });
+function editTeam(team) {
+  showScreen('builder');
+  openBuilder(team, {
+    onSave: (t) => { showScreen('setup'); renderTeamGrid(); if (!sel.away) sel.away = t.id; else if (!sel.home && sel.away !== t.id) sel.home = t.id; syncSetup(); },
+    onClose: () => { showScreen('setup'); renderTeamGrid(); },
+  });
+}
+$('#btn-build').addEventListener('click', () => editTeam(null));
+wireBuilder();
 $('#btn-start').addEventListener('click', () => {
   const seedIn = Number($('#seed').value);
   const seed = seedIn > 0 ? seedIn : Math.floor(Math.random() * 1e9);
@@ -81,9 +105,8 @@ $('#btn-start').addEventListener('click', () => {
 });
 $('#btn-new').addEventListener('click', () => {
   ctl.playing = false;
-  $('#game').classList.add('hidden');
-  $('#setup').classList.remove('hidden');
-  $('#btn-new').classList.add('hidden');
+  showScreen('setup');
+  renderTeamGrid();
   history.replaceState(null, '', location.pathname);
 });
 
@@ -96,12 +119,10 @@ const ctl = {
 };
 
 function startGame(awayId, homeId, seed) {
-  const away = TEAMS.find((t) => t.id === awayId), home = TEAMS.find((t) => t.id === homeId);
+  const away = findTeam(awayId), home = findTeam(homeId);
   ctl.game = new Game(away, home, seed);
   ctl.cur = null; ctl.phase = 'idle'; ctl.shownLog = 0; ctl.lastRec = null;
-  $('#setup').classList.add('hidden');
-  $('#game').classList.remove('hidden');
-  $('#btn-new').classList.remove('hidden');
+  showScreen('game');
   $('#final').classList.add('hidden');
   $('#tokens').innerHTML = '';
   if (!ctl.renderer) {
@@ -311,7 +332,7 @@ function renderScorebug(snap, rec) {
   const g = ctl.game;
   const side = (i) => {
     const t = g.teams[i];
-    const qb = g.lineups[i].off.QB;
+    const qb = g.depth[i].QB;
     const to = [0, 1, 2].map((k) => `<i class="${k < snap.timeouts[i] ? '' : 'used'}"></i>`).join('');
     return `<div class="sb-team ${i === 0 ? 'away' : 'home'}" style="background:linear-gradient(${i === 0 ? '90deg' : '270deg'}, ${t.colors.primary}55, transparent 70%)">
       <div class="logo" style="background:${t.colors.primary}"><img src="${spriteUrl(qb)}" alt="" referrerpolicy="no-referrer"></div>
@@ -360,7 +381,7 @@ function renderPBP(g, upto) {
   for (const { l, scored } of rows.reverse()) {
     if (l.q !== lastQ) { html += `<div class="pbp-q">${l.q === 5 ? 'Overtime' : `${qText(l.q)} quarter`}</div>`; lastQ = l.q; }
     const team = l.team != null ? g.teams[l.team] : null;
-    const cls = l.kind ? 'note' : scored ? 'score' : ['int', 'fumble', 'downs'].includes(l.highlight) ? 'turnover' : '';
+    const cls = l.kind === 'sub' ? 'note sub' : l.kind ? 'note' : scored ? 'score' : ['int', 'fumble', 'downs'].includes(l.highlight) ? 'turnover' : '';
     html += `<div class="pbp-item ${cls}"><span class="stripe" style="background:${team ? team.colors.primary : 'transparent'}"></span><div>
       <div class="meta">${clockText(l.clock)}${l.dd ? ` · ${esc(l.dd)} at ${esc(l.spot)}` : ''}${team ? ` · ${team.abbr}` : ''}${scored ? `<span class="sc">${g.teams[0].abbr} ${l.score[0]} – ${g.teams[1].abbr} ${l.score[1]}</span>` : ''}</div>
       <div class="txt">${esc(l.text)}</div></div></div>`;
@@ -370,7 +391,7 @@ function renderPBP(g, upto) {
 
 function plCell(g, id) {
   const p = g.players[id];
-  return `<td class="pl"><img src="${spriteUrl(p)}" alt="" loading="lazy" referrerpolicy="no-referrer">${esc(p.name)} <span class="muted">${p.pos === 'WR1' || p.pos === 'WR2' ? 'WR' : p.pos.replace(/\d/, '')}</span></td>`;
+  return `<td class="pl"><img src="${spriteUrl(p)}" alt="" loading="lazy" referrerpolicy="no-referrer">${esc(p.name)} <span class="muted">${p.pos}</span></td>`;
 }
 function statTable(g, ti, title, cols, filter, row) {
   const ids = Object.keys(g.stats.players).filter((id) => g.players[id].teamId === g.teams[ti].id && filter(g.stats.players[id]));
@@ -438,16 +459,27 @@ function renderTeamStats(g) {
 let rosterTeam = 0;
 function renderRosters(g) {
   const t = g.teams[rosterTeam];
-  const L = g.lineups[rosterTeam];
-  const rows = [...OFF_POS.map((p) => L.off[p]), ...DEF_POS.map((p) => L.def[p]), L.K];
-  const cols = ['spd', 'agi', 'str', 'tgh', 'awr', 'hands', 'arm', 'acc'];
-  let html = `<div class="roster-sw">${[0, 1].map((i) => `<button type="button" data-rt="${i}" class="${i === rosterTeam ? 'on' : ''}">${esc(g.teams[i].city)} ${esc(g.teams[i].name)}</button>`).join('')}</div>
-    <div class="muted" style="font-size:12px;margin-bottom:6px">${esc(t.coach.name)} · ${esc(t.coach.style)}. Ratings come from base stats: Speed→SPD/AGI, Attack→STR, Defense→TGH, Sp. Atk→ARM, Sp. Def→AWR/ACC/HANDS, weight→mass.</div>
-    <table class="st"><thead><tr><th>Player</th><th>OVR</th>${cols.map((c) => `<th>${c.toUpperCase()}</th>`).join('')}</tr></thead><tbody>
-    ${rows.map((p) => `<tr title="HP ${p.base.hp} / Atk ${p.base.atk} / Def ${p.base.def} / SpA ${p.base.spa} / SpD ${p.base.spd} / Spe ${p.base.spe} · ${p.height} m, ${p.weight} kg">
-      <td class="pl"><img src="${spriteUrl(p)}" alt="" loading="lazy" referrerpolicy="no-referrer"><div><b>${esc(p.name)}</b> <span class="muted">${p.pos}</span><br>${typeChips(p.types)}</div></td>
-      <td class="ovr">${p.ovr}</td>${cols.map((c) => `<td>${p.ratings[c]}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-  $('#tab-roster').innerHTML = html;
+  const D = g.depth[rosterTeam];
+  const energyBar = (c) => {
+    const e = Math.round(D.energy[c.id]);
+    const col = e >= 80 ? '#3fb950' : e >= 60 ? '#ffcb05' : '#f85149';
+    return `<span class="en" title="Energy ${e}%"><i style="width:${e}%;background:${col}"></i></span>`;
+  };
+  const onField = new Set(Object.values(D.onField).map((c) => c.id));
+  const row = (c, slotLabel) => {
+    const labels = STAT_LABELS[c.pos];
+    const tip = STAT_KEYS.map((k) => `${labels[k]} ${c.base[k]}`).join(' · ');
+    const top = STAT_KEYS.slice().sort((a, b) => c.base[b] - c.base[a]).slice(0, 2).map((k) => `${labels[k]} ${c.base[k]}`).join(', ');
+    return `<tr title="${esc(tip)} · ${c.height} m, ${c.weight} kg" class="${onField.has(c.id) ? '' : 'dim'}">
+      <td class="pl"><img src="${spriteUrl(c)}" alt="" loading="lazy" referrerpolicy="no-referrer"><div><b>${esc(c.name)}</b> <span class="muted">${slotLabel}</span><br>${typeChips(c.types)}</div></td>
+      <td class="ovr">${c.ovr}</td><td class="best">${esc(top)}</td><td>${energyBar(c)}</td></tr>`;
+  };
+  const starters = STARTERS.map((s) => row(D.cards[s.key], s.label === 'FLEX' ? `FLEX ${D.cards[s.key].pos}` : s.label));
+  const bench = BENCH.map((s) => row(D.cards[s.key], `Backup ${s.label}`));
+  $('#tab-roster').innerHTML = `<div class="roster-sw">${[0, 1].map((i) => `<button type="button" data-rt="${i}" class="${i === rosterTeam ? 'on' : ''}">${esc(g.teams[i].city)} ${esc(g.teams[i].name)}</button>`).join('')}</div>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">${esc(t.coach.name)} · ${esc(t.coach.style)} · ${PERSONNEL[D.personnel].name} offense · ${FRONTS[D.front].name} defense. Faded rows are off the field right now. Hover a player to see what each stat means at that position.</div>
+    <table class="st"><thead><tr><th>Starters</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${starters.join('')}</tbody></table>
+    <table class="st"><thead><tr><th>Bench</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${bench.join('')}</tbody></table>`;
   $$('#tab-roster [data-rt]').forEach((b) => b.addEventListener('click', () => { rosterTeam = Number(b.dataset.rt); renderRosters(g); }));
 }
 
@@ -455,7 +487,7 @@ function renderRosters(g) {
 // Boot
 renderTeamGrid();
 const qp = new URLSearchParams(location.search);
-if (qp.get('away') && qp.get('home') && TEAMS.some((t) => t.id === qp.get('away')) && TEAMS.some((t) => t.id === qp.get('home'))) {
+if (qp.get('away') && qp.get('home') && findTeam(qp.get('away')) && findTeam(qp.get('home'))) {
   sel.away = qp.get('away'); sel.home = qp.get('home');
   if (qp.get('seed')) $('#seed').value = qp.get('seed');
   syncSetup();
