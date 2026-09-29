@@ -5,7 +5,7 @@ import { FieldRenderer, spriteUrl } from './render.js';
 import { STAT_KEYS, STAT_LABELS } from './ratings.js';
 import { STARTERS, BENCH, parseCard, personnelOf, frontOf, PERSONNEL, FRONTS } from './roster.js';
 import { loadCustomTeams } from './storage.js';
-import { openBuilder, wireBuilder, TYPE_COLORS } from './builder.js';
+import { openBuilder, wireBuilder, TYPE_COLORS, synergyChips, unitCounts } from './builder.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -46,7 +46,7 @@ function renderTeamGrid() {
       <div class="info">
         <div class="tname">${esc(t.city)} ${esc(t.name)}</div>
         <div class="coach">${esc(c.name)} · ${esc(c.style)}</div>
-        <div class="sets"><span class="set">${PERSONNEL[personnelOf(t.roster)].name}</span><span class="set">${FRONTS[frontOf(t.roster)].name}</span></div>
+        <div class="sets"><span class="set">${PERSONNEL[personnelOf(t.roster)].name}</span><span class="set">${FRONTS[frontOf(t.roster)].name}</span>${(() => { const o = unitCounts(t.roster, 'O'), d = unitCounts(t.roster, 'D'); return synergyChips(o.counts, o.active, { compact: true, onlyActive: true }).replace(/class="syn/g, 'data-u="O" class="syn') + synergyChips(d.counts, d.active, { compact: true, onlyActive: true }).replace(/class="syn/g, 'data-u="D" class="syn'); })()}</div>
         <div class="meters">${meter('Pass', c.passRate)}${meter('Aggressive', c.aggression)}${meter('Blitz', c.blitzRate)}${meter('Man cov.', c.manRate)}</div>
         <div class="card-foot"><span class="pick"></span>${t.custom ? `<button type="button" class="ghost edit" data-edit="${t.id}">Edit</button>` : ''}</div>
       </div>
@@ -301,7 +301,8 @@ function renderPlaycard(rec) {
   $('#playcard').innerHTML = `<div class="dd">${esc(p.dd)} <span class="muted" style="font-size:13px">· ${esc(p.spot)}</span></div>
     <div class="row"><span class="side" style="background:${off.colors.primary}">${off.abbr}</span><div><span class="call">${esc(p.offCall)}</span>${p.offReason ? `<div class="why">${esc(p.offReason)}</div>` : ''}</div></div>
     ${kick && !p.defReason ? '' : `<div class="row"><span class="side" style="background:${def.colors.primary}">${def.abbr}</span><div><span class="call">${esc(p.defCall)}</span>${p.defReason ? `<div class="why">${esc(p.defReason)}</div>` : ''}</div></div>`}
-    ${p.decision ? `<div class="decision">${esc(p.decision)}</div>` : ''}`;
+    ${p.decision ? `<div class="decision">${esc(p.decision)}</div>` : ''}
+    ${p.syn && (Object.keys(p.syn.off).length || Object.keys(p.syn.def).length) ? `<div class="pc-syn">${Object.keys(p.syn.off).length ? `<span class="muted">${off.abbr}</span> ${synergyChips(p.syn.off, p.syn.off, { compact: true })}` : ''} ${Object.keys(p.syn.def).length ? `<span class="muted">${def.abbr}</span> ${synergyChips(p.syn.def, p.syn.def, { compact: true })}` : ''}</div>` : ''}`;
   $('#playcard').classList.remove('hidden');
 }
 let toastTimer;
@@ -478,6 +479,8 @@ function renderRosters(g) {
   const bench = BENCH.map((s) => row(D.cards[s.key], `Backup ${s.label}`));
   $('#tab-roster').innerHTML = `<div class="roster-sw">${[0, 1].map((i) => `<button type="button" data-rt="${i}" class="${i === rosterTeam ? 'on' : ''}">${esc(g.teams[i].city)} ${esc(g.teams[i].name)}</button>`).join('')}</div>
     <div class="muted" style="font-size:12px;margin-bottom:6px">${esc(t.coach.name)} · ${esc(t.coach.style)} · ${PERSONNEL[D.personnel].name} offense · ${FRONTS[D.front].name} defense. Faded rows are off the field right now. Hover a player to see what each stat means at that position.</div>
+    <div class="b-syn"><span class="muted small">Offense on field</span> ${synergyChips(D.synergy.O.counts, D.synergy.O.active)}</div>
+    <div class="b-syn" style="margin-bottom:8px"><span class="muted small">Defense on field</span> ${synergyChips(D.synergy.D.counts, D.synergy.D.active)}</div>
     <table class="st"><thead><tr><th>Starters</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${starters.join('')}</tbody></table>
     <table class="st"><thead><tr><th>Bench</th><th>OVR</th><th>Best traits</th><th>Energy</th></tr></thead><tbody>${bench.join('')}</tbody></table>`;
   $$('#tab-roster [data-rt]').forEach((b) => b.addEventListener('click', () => { rosterTeam = Number(b.dataset.rt); renderRosters(g); }));

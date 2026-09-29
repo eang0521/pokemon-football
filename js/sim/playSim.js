@@ -15,13 +15,14 @@ const r2 = (v) => Math.round(v * 100) / 100;
 
 // --------------------------------------------------------------------------
 // Entities
-function makeEnt(player, ratings, side, pos, idx) {
+function makeEnt(player, ratings, side, pos, idx, mods = {}) {
   const rt = ratings;
   return {
+    mods: mods || {},
     idx, side, pos, kind: player.pos, pl: player, r: rt,
     x: 0, y: 0, vx: 0, vy: 0, x0: 0, y0: 0,
     maxSpd: 5.6 + rt.spd * 0.043,
-    accel: 4.6 + rt.agi * 0.045,
+    accel: (4.6 + rt.agi * 0.045) * (1 + (mods?.burst || 0)), // Fire: burst
     mass: rt.mass,
     height: player.height,
     role: null, route: null, wp: 0, engaged: null,
@@ -41,7 +42,11 @@ function steer(e, tx, ty, frac, S) {
   const dvx = (d > 1e-6 ? (dx / d) * want : 0) - e.vx;
   const dvy = (d > 1e-6 ? (dy / d) * want : 0) - e.vy;
   const dv = hyp(dvx, dvy);
-  const lim = e.accel * DT;
+  let lim = e.accel * DT;
+  if (e.mods.flow) {
+    const sp = hyp(e.vx, e.vy);
+    if (sp > 2 && d > 1e-6 && (e.vx * dx + e.vy * dy) < 0.5 * sp * d) lim *= 1 + e.mods.flow * 1.5;
+  }
   const k = dv > lim ? lim / dv : 1;
   e.vx += dvx * k;
   e.vy += dvy * k;
@@ -82,21 +87,21 @@ export function simulatePlay(opts) {
     carrier: null, phase: 'live', result: null,
     handed: false, thrown: false, passInfo: null, runDiag: {},
     qb: { state: 'drop', tSet: null, readIdx: 0, lastEval: 0, onRun: false },
-    stats: [], tacklers: [], design: { routes: [], zones: [], aim: null, rush: [] },
+    stats: [], tacklers: [], design: { routes: [], zones: [], aim: null, rush: [] }, toxic: {},
   };
   const form = FORMATIONS[opts.form];
   S.form = form;
   S.pers = offense.personnel;
 
-  offense.slots.forEach(({ slot, player, ratings }, i) => {
-    const e = makeEnt(player, ratings, 'O', slot, i);
+  offense.slots.forEach(({ slot, player, ratings, mods }, i) => {
+    const e = makeEnt(player, ratings, 'O', slot, i, mods);
     const [dx, dy] = form.align[slot];
     e.x = e.x0 = los + dx;
     e.y = e.y0 = clamp(ballY + dy * flip, 1.2, W - 1.2);
     S.ents.push(e); S.O[slot] = e;
   });
-  defense.slots.forEach(({ slot, player, ratings }, i) => {
-    const e = makeEnt(player, ratings, 'D', slot, i + 7);
+  defense.slots.forEach(({ slot, player, ratings, mods }, i) => {
+    const e = makeEnt(player, ratings, 'D', slot, i + 7, mods);
     S.ents.push(e); S.D[slot] = e;
   });
   S.offList = S.ents.filter((e) => e.side === 'O');
@@ -330,6 +335,15 @@ function setCarrier(S, e) {
 
 function event(S, text, kind = 'info') { S.events.push({ t: S.t, text, kind }); }
 
+// Contact between two opponents: Ice slows the other player, Poison drains their energy.
+function contact(S, a, b) {
+  for (const [x, y] of [[a, b], [b, a]]) {
+    if (x.mods.chill) y.slowUntil = Math.max(y.slowUntil, S.t + x.mods.chill);
+    if (x.mods.toxic) S.toxic[y.pl.id] = (S.toxic[y.pl.id] || 0) + x.mods.toxic;
+  }
+}
+const nearMates = (S, e, r = 2.5) => S.ents.filter((o) => o !== e && o.side === e.side && dist(o, e) < r).length;
+
 // --------------------------------------------------------------------------
 // QB
 function qbLogic(S) {
@@ -429,7 +443,13 @@ function qbLogic(S) {
   S.currentRead = prog[idx] ? prog[idx].idx : -1;
 
   const noise = (100 - qb.r.awr) * 0.02;
-  const perceive = (rec) => openness(S, rec, qb) + S.rng.gauss(0, noise);
+  const perceive = (rec) => {
+    let op = openness(S, rec, qb) + S.rng.gauss(0, noise);
+    let nd = null, nds = Infinity;
+    for (const d of S.defList) { const dd = dist(d, rec); if (dd < nds) { nds = dd; nd = d; } }
+    if (nd && nd.mods.misread && nds < 6) op += nd.mods.misread * 14; // looks open, isn't
+    return op;
+  };
   let thrBase = 2.75 - since * 0.4 - aggression * 0.45 - (pressured ? (nearest < 1.7 ? 0.8 : 0.4) : 0);
   if (S.situation.desperate) thrBase -= 0.8;
 
@@ -642,7 +662,7 @@ function releaseThrow(S, rec, { hail = false, pressured = false } = {}) {
   S.currentRead = rec.idx;
   // receivers & defenders react
   rec.role = 'target';
-  for (const e of S.ents) if (e.side === 'D') e.ballReact = S.t + e.react + (e.role === 'man' ? 0.08 : 0);
+  for (const e of S.ents) if (e.side === 'D') e.ballReact = S.t + e.react + (e.role === 'man' ? 0.08 : 0) + (rec.mods.misread || 0);
   // batted at the line
   for (const e of S.ents) {
     if (e.side === 'D' && dist(e, qb) < 1.6 && S.rng.chance(0.06 + e.height * 0.02)) {
@@ -685,7 +705,7 @@ function updateBallFlight(S) {
   if (s > 0.1 && s < 0.9 && !f.hail) {
     for (const d of S.ents) {
       if (d.side !== 'D' || d.tipTried) continue;
-      if (hyp(d.x - b.x, d.y - b.y) < 0.85 && b.z < 2.2 + d.height * 0.4) {
+      if (hyp(d.x - b.x, d.y - b.y) < 0.85 + (d.mods.reach || 0) && b.z < 2.2 + d.height * 0.4 + (d.mods.reach || 0)) {
         d.tipTried = true;
         if (S.rng.chance(0.55)) {
           if (S.rng.chance(0.2 + d.r.ball * 0.003)) return intercept(S, d, 'undercuts the route and picks it off');
@@ -706,14 +726,14 @@ function resolveCatch(S) {
   const rec = f.target;
   const oob = L.y < 0 || L.y > S.W || L.x > 110;
   const dr = dist(rec, L);
-  const Rc = 1.35 + clamp(rec.height - 1, -0.5, 1.5) * 0.22;
+  const Rc = 1.35 + clamp(rec.height - 1, -0.5, 1.5) * 0.22 + (rec.mods.reach || 0);
   let bestD = null, dd = Infinity;
   for (const e of S.ents) {
     if (e.side !== 'D') continue;
     const d = dist(e, L);
     if (d < dd) { dd = d; bestD = e; }
   }
-  const Rd = 1.0 + clamp((bestD?.height || 1) - 1, -0.5, 1.5) * 0.2;
+  const Rd = 1.0 + clamp((bestD?.height || 1) - 1, -0.5, 1.5) * 0.2 + (bestD?.mods.reach || 0);
   const recIn = dr <= Rc, defIn = dd <= Rd;
 
   if (oob) {
@@ -833,7 +853,7 @@ function runRoute(S, e) {
       if (next) {
         const a1 = Math.atan2(p.y - prev.y, p.x - prev.x), a2 = Math.atan2(next.y - p.y, next.x - p.x);
         let da = Math.abs(a2 - a1); if (da > Math.PI) da = 2 * Math.PI - da;
-        if (da > 0.7) { const k = 0.45 + e.r.route * 0.004 + e.r.agi * 0.001; e.vx *= k; e.vy *= k; }
+        if (da > 0.7) { let k = 0.45 + e.r.route * 0.004 + e.r.agi * 0.001; k += (1 - k) * (e.mods.flow || 0); e.vx *= k; e.vy *= k; }
       }
     }
     return;
@@ -1078,13 +1098,14 @@ function manCover(S, e, m) {
   // press jam at the line
   if (e.press && !e.jamDone && t > 0.05 && dist(e, m) < 1.6) {
     e.jamDone = true;
+    contact(S, e, m);
     const win = (e.r.press * 0.7 + e.r.agi * 0.3) - (m.r.str * 0.6 + m.r.route * 0.2 + m.r.agi * 0.2) + S.rng.gauss(0, 12);
     if (win > 0) { m.jamUntil = t + clamp(0.15 + win * 0.012, 0.15, 0.55); }
     else { e.stunUntil = t + clamp(0.1 - win * 0.01, 0.1, 0.5); event(S, `${m.pl.name} beats the press!`); }
   }
   // delayed read of the receiver (reaction time)
   // crisp route runners buy extra separation against lesser cover players
-  const lag = Math.round(clamp(e.react + Math.max(0, m.r.route - e.r.cover) * 0.003, 0.1, 0.55) / DT);
+  const lag = Math.round(clamp(e.react + Math.max(0, m.r.route - e.r.cover) * 0.003 + (m.mods.misread || 0), 0.1, 0.8) / DT);
   const hist = m.hist;
   const h = hist[Math.max(0, hist.length - 1 - lag)] || [m.x, m.y];
   const h2 = hist[Math.max(0, hist.length - 2 - lag)] || h;
@@ -1197,14 +1218,23 @@ function escortReturn(S, e) {
 function power(e, kind, isDef) {
   const r = e.r;
   if (kind === 'pass') return isDef ? r.rushPow * 0.6 + r.agi * 0.2 + r.rushFin * 0.2 : r.passBlk * 0.7 + r.tech * 0.15 + r.awr * 0.15;
-  if (kind === 'run') return isDef ? r.runStop * 0.65 + r.rushPow * 0.2 + r.awr * 0.15 : r.runBlk * 0.7 + r.tech * 0.15 + r.awr * 0.15;
+  if (kind === 'run') return isDef ? r.runStop * 0.65 + r.rushPow * 0.2 + r.awr * 0.15 : r.runBlk * 0.7 + r.tech * 0.15 + r.awr * 0.15 - 3;
   return isDef ? r.runStop * 0.5 + r.agi * 0.3 + r.awr * 0.2 : r.runBlk * 0.6 + r.agi * 0.2 + r.awr * 0.2; // stalk
 }
 
 function engage(S, blk, def, kind) {
   if (blk.engaged || def.engaged || S.t < def.noEngageUntil && def.noEngageFrom === blk) return;
   if (def === S.carrier || blk === S.carrier) return;
-  const diff = power(def, kind, true) - power(blk, kind, false) + (def.mass - blk.mass) * 0.08 + S.rng.gauss(0, 7);
+  // Ghost: the block attempt phases right through
+  if (def.mods.phase && S.rng.chance(def.mods.phase)) {
+    def.noEngageUntil = S.t + 0.6; def.noEngageFrom = blk;
+    if (S.rng.chance(0.3)) event(S, `${def.pl.name} phases through ${blk.pl.name}'s block!`);
+    return;
+  }
+  let diff = power(def, kind, true) - power(blk, kind, false) + (def.mass - blk.mass) * 0.08 + S.rng.gauss(0, 7);
+  diff += (def.mods.leverage || 0) - (blk.mods.leverage || 0); // Ground
+  diff += ((def.mods.swarm || 0) * nearMates(S, def) - (blk.mods.swarm || 0) * nearMates(S, blk)) * 60; // Bug
+  contact(S, blk, def);
   const p = { a: blk, d: def, kind, t0: S.t, diff, cx: (blk.x + def.x) / 2, cy: (blk.y + def.y) / 2 };
   // pass rush 'quick win': a rep can be lost at the snap (speed rush, swim, bull)
   if (kind === 'pass' && S.rng.chance(clamp(0.25 + diff * 0.009 + (def.r.rushFin - 60) * 0.004, 0.06, 0.5))) p.winAt = S.t + S.rng.range(0.35, 1.3);
@@ -1225,7 +1255,9 @@ function updatePairs(S) {
     if (S.carrier && S.carrier.side === d.side) { breakPair(S, p); continue; }
     let ux = goal.x - p.cx, uy = goal.y - p.cy;
     const ul = hyp(ux, uy) || 1; ux /= ul; uy /= ul;
-    const v = kind === 'pass' ? clamp(1.35 + p.diff * 0.1, -0.8, 3.5) : clamp(p.diff * 0.07, -1.6, 2.2);
+    let v = kind === 'pass' ? clamp(1.35 + p.diff * 0.1, -0.8, 3.5) : clamp(p.diff * 0.07, -1.6, 2.2);
+    if (v > 0 && a.mods.sturdy) v *= 1 - a.mods.sturdy;
+    if (v < 0 && d.mods.sturdy) v *= 1 - d.mods.sturdy;
     p.cx += ux * v * DT; p.cy += uy * v * DT;
     // defender works laterally toward the ball
     if (kind !== 'pass') p.cy += clamp(goal.y - p.cy, -1, 1) * 0.6 * DT * (d.r.agi / 80);
@@ -1333,17 +1365,24 @@ function checkCarrier(S) {
     const dive = d > R && d < R + 0.8 && closing < 0.6;
     if ((d > R && !dive) || S.t - o.lastTackleTry < 0.6) continue;
     o.lastTackleTry = S.t;
+    contact(S, o, c);
+    if (c.mods.phase && S.rng.chance(c.mods.phase)) {
+      o.stunUntil = S.t + 0.5;
+      event(S, `${c.pl.name} phases right through ${o.pl.name}!`);
+      continue;
+    }
     const helpers = near.filter((x) => x !== o).length;
     const tr = o.r, cr = c.r;
     let p = 0.91 + (tr.tackle * 0.45 + tr.awr * 0.25 + tr.spd * 0.3 - cr.elu * 0.35 - cr.tgh * 0.35 - cr.str * 0.3) * 0.012;
     p += (o.mass - c.mass) * 0.003 + helpers * 0.08;
+    p += (o.mods.swarm || 0) * helpers - (c.mods.swarm || 0) * nearMates(S, c); // Bug
     if (c.pos === 'QB' && S.ball.holder === c && !S.scramble && c.side === 'O') p += 0.08;
     p = clamp(p, 0.45, 0.98);
     if (dive) p *= 0.62;
     if (S.rng.chance(p)) {
       S.tacklers = [o, ...near.filter((x) => x !== o && dist(x, c) < 1.4).slice(0, 1)];
       // fumble?
-      const pF = 0.009 + Math.max(0, tr.tackle - cr.tgh) * 0.00035;
+      const pF = (0.009 + Math.max(0, tr.tackle - cr.tgh) * 0.00035) * (1 - (c.mods.sturdy || 0));
       if (S.rng.chance(pF)) return fumble(S, c, o);
       // fall forward
       const fall = clamp(0.5 + (cr.str + c.mass - tr.tackle - o.mass) * 0.015, 0, 1.6);
@@ -1369,6 +1408,8 @@ function checkSack(S) {
     const d = dist(o, qb);
     if (d > 1.05 || S.t - o.lastTackleTry < 0.6) continue;
     o.lastTackleTry = S.t;
+    contact(S, o, qb);
+    if (qb.mods.phase && S.rng.chance(qb.mods.phase)) { o.stunUntil = S.t + 0.6; event(S, `${qb.pl.name} phases out of ${o.pl.name}'s grasp!`); continue; }
     const escape = clamp(0.08 + (qb.r.agi * 0.5 + qb.r.tgh * 0.5 - o.r.rushPow * 0.6 - o.r.spd * 0.2) * 0.005, 0.03, 0.25);
     if (S.rng.chance(escape)) {
       o.stunUntil = S.t + 0.6;
@@ -1376,7 +1417,7 @@ function checkSack(S) {
       continue;
     }
     S.tacklers = [o];
-    if (S.rng.chance(0.07)) return fumble(S, qb, o, true);
+    if (S.rng.chance(0.07 * (1 - (qb.mods.sturdy || 0)))) return fumble(S, qb, o, true);
     S.sacked = true;
     return endPlay(S, { type: 'sack', by: o });
   }
@@ -1448,7 +1489,7 @@ function finalize(S) {
   const out = {
     frames: S.frames, events: S.events, design: S.design, duration: S.t,
     cast: S.ents.map((e) => ({ pid: e.pl.id, side: e.side, pos: e.pos, card: e.pl.pos })),
-    stats: S.stats, kind: S.play.type, playName: S.play.name, defName: S.dcall.name,
+    stats: S.stats, kind: S.play.type, playName: S.play.name, defName: S.dcall.name, toxic: S.toxic,
     yards: 0, endX: los, td: false, defTD: false, safety: false, turnover: false,
     incomplete: false, oob: false, clockStops: false, desc: null,
   };

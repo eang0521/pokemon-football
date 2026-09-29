@@ -4,6 +4,7 @@ import { cardRatings, overall, STAT_KEYS, STAT_LABELS, POS_NAMES } from './ratin
 import { STARTERS, BENCH, SLOT, parseCard, cardValue, validateRoster, PERSONNEL, FRONTS, personnelOf, frontOf } from './roster.js';
 import { COACH_PRESETS } from './data/teams.js';
 import { saveCustomTeam, deleteCustomTeam } from './storage.js';
+import { SYNERGIES, TIER_COUNTS, unitSynergies, tierName } from './synergy.js';
 import { spriteUrl } from './render.js';
 
 const $ = (s) => document.querySelector(s);
@@ -15,6 +16,25 @@ export const TYPE_COLORS = {
 };
 const typeChips = (types) => `<span class="types">${types.map((t) => `<span class="type" style="background:${TYPE_COLORS[t] || '#666'}">${t}</span>`).join('')}</span>`;
 const PAGE = 60;
+
+// Synergy chips: counts {type:n}, active {type:tier}. Shows progress toward the next tier.
+export function synergyChips(counts, active, { compact = false, onlyActive = false } = {}) {
+  const list = Object.keys(counts).filter((t) => SYNERGIES[t] && (!onlyActive || active[t]))
+    .sort((a, b) => (active[b] || 0) - (active[a] || 0) || counts[b] - counts[a]);
+  if (!list.length) return compact ? '' : '<span class="muted small">No types yet</span>';
+  return list.map((t) => {
+    const s = SYNERGIES[t], tier = active[t] || 0, n = counts[t];
+    const next = TIER_COUNTS.find((c) => c > n);
+    const tip = `${s.name} — ${s.title}: ${s.desc}  Tiers at ${TIER_COUNTS.join('/')}.`;
+    const label = compact ? `${s.name} ${tierName(tier)}` : `${s.name} ${n}${next ? `/${next}` : ''}${tier ? ` · ${s.title} ${tierName(tier)}` : ''}`;
+    return `<span class="syn${tier ? ' on' : ''}" style="--tc:${TYPE_COLORS[t]}" title="${esc(tip)}">${esc(label)}</span>`;
+  }).join('');
+}
+const unitCounts = (roster, unit) => {
+  const cards = STARTERS.filter((s) => s.unit === unit).map((s) => parseCard(roster[s.key], s.key)).filter(Boolean).map((c) => ({ types: POKEMON[c.mon].types }));
+  return unitSynergies(cards);
+};
+export { unitCounts };
 
 // cache: pos -> [{p, r, ovr}]
 const cardCache = {};
@@ -93,6 +113,8 @@ function renderSummary() {
       <div><span class="muted">Defense</span> <b>${front.name}</b> <span class="muted">· OVR ${avg('D')}</span><div class="muted small">${esc(front.desc)}</div></div>
       <div><span class="muted">Cards</span> <b>${filled}/${STARTERS.length + BENCH.length}</b></div>
     </div>
+    <div class="b-syn"><span class="muted small">Offense synergies</span> ${(() => { const u = unitCounts(r, 'O'); return synergyChips(u.counts, u.active); })()}</div>
+    <div class="b-syn"><span class="muted small">Defense synergies</span> ${(() => { const u = unitCounts(r, 'D'); return synergyChips(u.counts, u.active); })()}</div>
     ${errors.length && filled ? `<div class="b-errors">${errors.slice(0, 3).map(esc).join(' · ')}${errors.length > 3 ? ` · +${errors.length - 3} more` : ''}</div>` : ''}`;
 }
 

@@ -1,5 +1,6 @@
 // Depth chart, energy (HP = stamina) and substitutions for one team.
-import { buildCard, applySynergies } from './ratings.js';
+import { buildCard, cardRatings } from './ratings.js';
+import { unitSynergies, playerEffects } from './synergy.js';
 import { STARTERS, BENCH, parseCard, personnelOf, frontOf } from './roster.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -26,6 +27,9 @@ export class TeamDepth {
     this.front = frontOf(team.roster);
     this.onField = Object.fromEntries([...OFF_KEYS, ...DEF_KEYS, 'K'].map((k) => [k, this.cards[k]]));
     this.energy = Object.fromEntries(Object.values(this.cards).map((c) => [c.id, 100]));
+    this.live = {}; // per card: synergy-adjusted stamina and Grass regen from its last snap
+    this.synergy = { O: { counts: {}, active: {} }, D: { counts: {}, active: {} } };
+    this.synOverride = null; // tools: { O|D: { type, tier, members: Set(card ids) } }
   }
 
   get K() { return this.onField.K; }
@@ -37,43 +41,60 @@ export class TeamDepth {
   // ratings after fatigue (and type synergies for the unit on the field)
   fatigueMult(card) {
     const e = this.energy[card.id];
-    return e >= FRESH ? 1 : clamp(1 - (FRESH - e) * 0.005, 0.6, 1);
+    return e >= FRESH ? 1 : clamp(1 - (FRESH - e) * 0.008, 0.55, 1);
   }
-  liveRatings(cards, unit) {
-    const base = applySynergies(cards, unit);
-    return cards.map((c, i) => {
-      const m = this.fatigueMult(c);
-      if (m === 1) return base[i];
-      const r = {};
-      for (const k in base[i]) r[k] = k === 'mass' ? base[i][k] : Math.round(base[i][k] * m);
-      return r;
+  // Ratings for a unit on the field: type-synergy stat boosts (applied to base stats, so
+  // they mean the right thing at each position), Dragon clutch, then fatigue.
+  // Returns [{ ratings, mods }] and records the unit's active synergies.
+  liveUnit(cards, unit, ctx = {}) {
+    const syn = unitSynergies(cards);
+    const ov = this.synOverride?.[unit];
+    if (ov) syn.active = { ...syn.active, [ov.type]: ov.tier };
+    this.synergy[unit] = syn;
+    return cards.map((c) => {
+      const types = ov && ov.members.has(c.id) && !c.types.includes(ov.type) ? [...c.types, ov.type] : c.types;
+      const { stat, mods } = playerEffects({ types }, syn.active);
+      let r = Object.keys(stat).length ? cardRatings(c.slug, c.pos, stat) : c.ratings;
+      let m = this.fatigueMult(c);
+      if (mods.clutch && ctx.clutch) m *= 1 + mods.clutch;
+      this.live[c.id] = { stm: r.stm, regen: mods.regen || 0 };
+      if (m !== 1) {
+        const out = {};
+        for (const k in r) out[k] = k === 'mass' ? r[k] : Math.max(20, Math.round(r[k] * m));
+        r = out;
+      }
+      return { ratings: r, mods };
     });
   }
 
-  // [{slot, player, ratings}] in sim slot order QB, RB, WR, FX, LG, C, RG
-  simOffense() {
+  // [{slot, player, ratings, mods}] in sim slot order QB, RB, WR, FX, LG, C, RG
+  simOffense(ctx) {
     const cards = this.offense();
-    const rt = this.liveRatings(cards, 'offense');
-    return OFF_KEYS.map((k, i) => ({ slot: SIM_OFF[k], player: cards[i], ratings: rt[i] }));
+    const live = this.liveUnit(cards, 'O', ctx);
+    return OFF_KEYS.map((k, i) => ({ slot: SIM_OFF[k], player: cards[i], ...live[i] }));
   }
   // defenders named by what they are on the field: DL1.., LB1.., DB1..
-  simDefense() {
+  simDefense(ctx) {
     const cards = this.defense();
-    const rt = this.liveRatings(cards, 'defense');
+    const live = this.liveUnit(cards, 'D', ctx);
     const n = { DL: 0, LB: 0, DB: 0 };
-    const out = cards.map((c, i) => ({ slot: `${c.pos}${++n[c.pos]}`, player: c, ratings: rt[i] }));
+    const out = cards.map((c, i) => ({ slot: `${c.pos}${++n[c.pos]}`, player: c, ...live[i] }));
     const order = { DL: 0, LB: 1, DB: 2 };
     return out.sort((a, b) => order[a.player.pos] - order[b.player.pos]);
   }
 
   // ---- energy
   drain(card, amount) {
-    const stm = card.ratings.stm;
-    this.energy[card.id] = clamp(this.energy[card.id] - amount * (1.6 - stm / 100), 0, 100);
+    const L = this.live[card.id];
+    const stm = L?.stm ?? card.ratings.stm;
+    const regen = L?.regen || 0;
+    this.energy[card.id] = clamp(this.energy[card.id] - amount * (1.6 - stm / 100) * Math.max(0.2, 1 - regen * 0.4), 0, 100);
   }
   recover(card, amount) {
-    const stm = card.ratings.stm;
-    this.energy[card.id] = clamp(this.energy[card.id] + amount * (0.6 + stm / 200), 0, 100);
+    const L = this.live[card.id];
+    const stm = L?.stm ?? card.ratings.stm;
+    const regen = L?.regen || 0;
+    this.energy[card.id] = clamp(this.energy[card.id] + amount * (0.6 + stm / 200) * (1 + regen), 0, 100);
   }
   recoverAll(amount) { for (const c of this.all()) this.recover(c, amount); }
   // after a play: everyone not on the field for it rests

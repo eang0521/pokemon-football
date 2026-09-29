@@ -331,12 +331,14 @@ export class Game {
     const d = 1 - i;
     const ballOn = overrideBallOn ?? this.ballOn;
     const pers = this.depth[i].personnel;
+    // Dragon (Outrage): big moments — 3rd/4th down, red zone, one-score 4th quarter or OT
+    const clutch = this.down >= 3 || ballOn >= 80 || (this.quarter >= 4 && Math.abs(this.score[0] - this.score[1]) <= 8);
     let flip = this.ballY <= FIELD_W / 2 ? 1 : -1;
     if (this.rng.chance(0.25)) flip = -flip;
     return {
       rng: this.rng, W: FIELD_W, los: ballOn, ballY: this.ballY, flip,
-      offense: { slots: this.depth[i].simOffense(), personnel: pers },
-      defense: { slots: this.depth[d].simDefense() },
+      offense: { slots: this.depth[i].simOffense({ clutch }), personnel: pers },
+      defense: { slots: this.depth[d].simDefense({ clutch }) },
       play, dcall, form: play.forms[pers],
       situation: {
         aggression: this.teams[i].coach.aggression, deepBias: this.teams[i].coach.deepRate - 0.5,
@@ -351,6 +353,8 @@ export class Game {
     const team = this.teams[i];
     const args = this.simArgs(i, oc.play, dc.dcall, sit);
     const res = simulatePlay(args);
+    // Poison: extra energy lost from contact with Poison types
+    for (const pid in res.toxic) { const t = this.teamOf[pid]; if (t != null) this.depth[t].drain(this.players[pid], res.toxic[pid]); }
     if (this.onPlay) this.onPlay({ oc, dc, res, sit });
     const los = this.ballOn;
     const dd = this.ddText();
@@ -360,6 +364,7 @@ export class Game {
       presnap: {
         dd: twoPoint ? 'Two-point try' : dd, spot: this.yardText(los), offCall: `${oc.play.name}`, form: args.form,
         defCall: dc.dcall.name, offReason: oc.reason, defReason: dc.reason, offTeam: i,
+        syn: { off: { ...this.depth[i].synergy.O.active }, def: { ...this.depth[d].synergy.D.active } },
       },
     };
     this.lastPlayId = oc.play.id;

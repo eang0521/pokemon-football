@@ -11,7 +11,7 @@ export function playArgs({ rng, play, dcall, offTeam = TEAMS[0], defTeam = TEAMS
   const personnel = play.forms[pers] ? pers : Object.keys(play.forms)[0];
   return {
     rng, W: 40, los, ballY, flip, play, dcall, situation, form,
-    offense: { slots: O.simOffense(), personnel },
-    defense: { slots: D.simDefense() },
+    offense: { slots: O.simOffense({}), personnel },
+    defense: { slots: D.simDefense({}) },
   };
 }

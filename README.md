@@ -46,7 +46,31 @@ Build your own team from any card in the database. You can:
 
 Custom teams are saved in your browser.
 
-A type-synergy hook is stubbed in `js/ratings.js` (`TYPE_SYNERGIES`). For example, fielding 3+ Electric types could give the unit a speed boost.
+### Type synergies
+Count each type among the 7 players a unit has on the field (dual types count for both). With **2 / 4 / 6** of a type, the synergy reaches tier I / II / III, and every Pokémon of that type in the unit gets its effect. Each effect works the same on offense and defense. Substitutions can switch a synergy on or off mid-game.
+
+| Type | Synergy | Effect |
+|---|---|---|
+| Normal | Endurance | +HP (stamina) |
+| Fighting | Brawler | +Attack (arm, power, blocking, tackling, depending on position) |
+| Steel | Iron | +Defense (toughness, pass blocking, run stopping, press) |
+| Psychic | Mind | +Sp. Atk (accuracy, route running, finesse rush, ball skills) |
+| Fairy | Grace | +Sp. Def (vision, hands, diagnosis, coverage) |
+| Electric | Charge | +Speed |
+| Dragon | Outrage | Clutch: every rating rises on 3rd/4th down, in the red zone, and in one-score 4th quarters or overtime |
+| Fire | Burst | Faster acceleration |
+| Water | Flow | Keep speed through cuts, route breaks, and breaks on the ball |
+| Grass | Photosynthesis | Faster energy recovery, less drain per snap |
+| Ice | Chill | Opponents they make contact with are briefly slowed |
+| Poison | Toxic | Opponents they make contact with lose extra energy |
+| Ground | Leverage | Win the push in blocking battles, on either side of the block |
+| Flying | Reach | Bigger reach on the ball (catch radius, interception and deflection radius) |
+| Bug | Swarm | Stronger in contact for each nearby teammate |
+| Rock | Sturdy | Resist being moved in blocks; fewer fumbles |
+| Ghost | Phase | Chance that tackles and blocks on them miss |
+| Dark | Feint | Defenders react late to their routes; QBs misjudge windows near them |
+
+Magnitudes live in `SYNERGY_VALUES` in `js/synergy.js` and are balanced by simulation. `tools/synergy-calibrate.mjs` plays each team against an identical copy with one synergy forced to tier II, so every type can be tuned to about the same win-rate edge.
 
 ## Project layout
 
@@ -59,7 +83,8 @@ js/render.js          canvas field + DOM sprite tokens
 js/game.js            game state machine: clock, downs, scoring, special teams, stats
 js/depth.js           depth chart, energy/fatigue, substitutions
 js/roster.js          roster slots, FLEX personnel/fronts, validation
-js/ratings.js         cards: base stats -> position traits (+ type-synergy hook)
+js/ratings.js         cards: base stats -> position traits
+js/synergy.js         type synergy definitions, tiers and tuned magnitudes
 js/playcaller.js      offensive/defensive play-calling AI, 4th-down and PAT logic
 js/playbook.js        formations, routes, plays, defensive call templates + resolver
 js/sim/playSim.js     the per-play agent simulation
@@ -102,6 +127,7 @@ node tools/game-breakdown.mjs 40     # run game by scheme/coverage + pass-rush s
 node tools/trace-play.mjs smash c3 7 # frame-by-frame trace of one play
 node tools/fatigue-report.mjs 12     # substitutions and energy by position
 node tools/random-rosters.mjs 30     # stress test with random rosters from the whole Pokédex
+node tools/synergy-calibrate.mjs 400 all 2   # win-rate edge of every type synergy at tier II
 ```
 
 Sprites are hotlinked from [pokemondb.net](https://pokemondb.net/sprites) (Pokémon HOME renders by default, with optional Gen 5 animated sprites). Pokémon © Nintendo / Game Freak / The Pokémon Company. This is an unaffiliated fan project.

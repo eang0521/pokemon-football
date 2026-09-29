@@ -73,10 +73,12 @@ export function massRating(kg) {
   return clamp(Math.round(20 + Math.log10(Math.max(kg, 0.5)) * 28), 20, 99);
 }
 
-export function cardRatings(slug, pos) {
+// statBoost: optional { atk: 0.16, ... } fractions added to base stats (type synergies)
+export function cardRatings(slug, pos, statBoost = null) {
   const p = POKEMON[slug];
   if (!p) throw new Error(`Unknown Pokémon: ${slug}`);
-  const s = p.stats;
+  let s = p.stats;
+  if (statBoost) { s = { ...s }; for (const k in statBoost) s[k] = Math.round(s[k] * (1 + statBoost[k])); }
   const map = STAT_MAP[pos];
   const trained = {};
   for (const k of STAT_KEYS) for (const trait of map[k]) trained[trait] = rate(s[k]);
@@ -109,23 +111,4 @@ export function buildCard(slug, pos, extra = {}) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Type synergy hook (future feature).
-// Each rule: if at least `count` players of `type` are on the field for a unit,
-// every player on that unit gets `boost` added to the listed traits.
-// Example: { type: 'electric', count: 3, unit: 'offense', boost: { spd: 2 } }
-export const TYPE_SYNERGIES = [];
-
-export function applySynergies(players, unit) {
-  if (!TYPE_SYNERGIES.length) return players.map((p) => p.ratings);
-  const counts = {};
-  for (const p of players) for (const t of p.types) counts[t] = (counts[t] || 0) + 1;
-  return players.map((p) => {
-    const out = { ...p.ratings };
-    for (const rule of TYPE_SYNERGIES) {
-      if (rule.unit !== unit || (counts[rule.type] || 0) < rule.count) continue;
-      for (const k in rule.boost) out[k] = clamp(out[k] + rule.boost[k], 20, 99);
-    }
-    return out;
-  });
-}
+// Type synergies live in js/synergy.js.
