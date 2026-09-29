@@ -189,20 +189,27 @@ function pick(mon) {
 }
 
 // ---------------------------------------------------------------- coach
-function renderCoach() {
-  const c = state.team.coach;
+function renderCoach() { coachControls($('#b-coach'), state.team.coach); }
+
+// Coach tendency controls (preset + sliders), shared with adventure mode. Edits `coach` in place.
+export function coachControls(el, coach, onChange = () => {}) {
+  const c = coach;
   const slider = (k, label) => `<label class="cs"><span>${label}</span><input type="range" min="0" max="100" value="${Math.round(c[k] * 100)}" data-k="${k}"><b>${Math.round(c[k] * 100)}</b></label>`;
-  $('#b-coach').innerHTML = `
-    <label class="cs"><span>Preset</span><select id="b-preset">${Object.entries(COACH_PRESETS).map(([k, v]) => `<option value="${k}" ${c.preset === k ? 'selected' : ''}>${v.style}</option>`).join('')}</select></label>
+  el.classList.add('coach-ctl');
+  el.innerHTML = `
+    <label class="cs"><span>Preset</span><select data-preset>${Object.entries(COACH_PRESETS).map(([k, v]) => `<option value="${k}" ${c.preset === k ? 'selected' : ''}>${v.style}</option>`).join('')}</select></label>
     ${slider('passRate', 'Pass rate')}${slider('deepRate', 'Deep shots')}${slider('paRate', 'Play action')}${slider('aggression', 'Aggression (4th down / 2-pt)')}
     ${slider('blitzRate', 'Blitz rate')}${slider('manRate', 'Man coverage')}
     <label class="cs"><span>Run scheme</span><select data-k="runStyle">${['zone', 'power', 'mixed'].map((v) => `<option ${c.runStyle === v ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     <label class="cs"><span>Tempo</span><select data-k="tempo">${['hurry', 'normal', 'slow'].map((v) => `<option ${c.tempo === v ? 'selected' : ''}>${v}</option>`).join('')}</select></label>`;
-  $('#b-preset').addEventListener('change', (e) => { state.team.coach = { ...c, preset: e.target.value, ...COACH_PRESETS[e.target.value] }; renderCoach(); });
-  document.querySelectorAll('#b-coach input[type=range]').forEach((el) => el.addEventListener('input', () => {
-    state.team.coach[el.dataset.k] = Number(el.value) / 100; el.nextElementSibling.textContent = el.value;
+  el.querySelector('[data-preset]').addEventListener('change', (e) => {
+    Object.assign(c, COACH_PRESETS[e.target.value], { preset: e.target.value });
+    coachControls(el, c, onChange); onChange();
+  });
+  el.querySelectorAll('input[type=range]').forEach((r) => r.addEventListener('input', () => {
+    c[r.dataset.k] = Number(r.value) / 100; r.nextElementSibling.textContent = r.value; onChange();
   }));
-  document.querySelectorAll('#b-coach select[data-k]').forEach((el) => el.addEventListener('change', () => { state.team.coach[el.dataset.k] = el.value; }));
+  el.querySelectorAll('select[data-k]').forEach((s) => s.addEventListener('change', () => { c[s.dataset.k] = s.value; onChange(); }));
 }
 
 // ---------------------------------------------------------------- actions

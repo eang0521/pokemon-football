@@ -7,7 +7,7 @@ import { COACH_PRESETS } from '../data/teams.js';
 import { STAT_KEYS, STAT_LABELS, POSITIONS, cardOverall } from '../ratings.js';
 import { ALL_SLOTS, STARTERS, BENCH, PERSONNEL, FRONTS, personnelOf, frontOf } from '../roster.js';
 import { spriteUrl } from '../render.js';
-import { TYPE_COLORS, synergyChips, unitCounts } from '../builder.js';
+import { TYPE_COLORS, synergyChips, unitCounts, coachControls } from '../builder.js';
 import { openModal, closeModal } from '../modal.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -89,6 +89,7 @@ const NAME_IDEAS = ['Underdogs', 'Rookies', 'Hopefuls', 'Longshots', 'Mavericks'
 function newDialog() {
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
   const city = pick(CITY_IDEAS), name = pick(NAME_IDEAS);
+  const coach = { name: 'Coach You', preset: 'balanced', ...COACH_PRESETS.balanced };
   openModal(`<h3>New adventure</h3>
     <p class="muted small">Name your team. You'll start with 23 random cards from the 5th to 15th percentile at their positions.</p>
     <div class="adv-form">
@@ -97,16 +98,17 @@ function newDialog() {
       <label>Abbr. <input id="n-abbr" maxlength="3" value="${esc(city.slice(0, 3).toUpperCase())}" class="abbr"></label>
       <label>Primary <input id="n-c1" type="color" value="#2e7d32"></label>
       <label>Secondary <input id="n-c2" type="color" value="#ffcb05"></label>
-      <label>Coaching style <select id="n-coach">${Object.entries(COACH_PRESETS).map(([k, p]) => `<option value="${k}">${esc(p.style)}</option>`).join('')}</select></label>
     </div>
+    <details class="b-coach" open><summary>Coach tendencies</summary><div id="n-coach"></div></details>
+    <p class="muted small">You can change these any time during the adventure with the <b>Coach</b> button.</p>
     <div class="modal-actions"><button type="button" class="primary" id="n-go">Start adventure</button><button type="button" class="ghost" data-close>Cancel</button></div>`, (d) => {
+    coachControls($('#n-coach', d), coach);
     $('#n-go', d).onclick = () => {
       const v = (id) => $(id, d).value.trim();
-      const preset = v('#n-coach');
       const team = {
         city: v('#n-city') || 'Pallet', name: v('#n-name') || 'Underdogs', abbr: (v('#n-abbr') || 'YOU').toUpperCase().slice(0, 3),
         colors: { primary: v('#n-c1'), secondary: v('#n-c2') },
-        coach: { name: 'Coach You', preset, ...COACH_PRESETS[preset] },
+        coach,
       };
       run = A.newRun({ team });
       save();
@@ -131,7 +133,7 @@ function render() {
       <span title="Average overall of your 15 starters (and their average percentile)">Team <b>${tr.ovr}</b> OVR <span class="muted">(${ord(tr.pct)})</span></span>
       <span title="Win-loss record">${run.stats.w}-${run.stats.l}${run.stats.t ? `-${run.stats.t}` : ''}</span>
     </div>
-    <div class="adv-btns"><button type="button" data-act="roster">Roster</button><button type="button" data-act="log">Log</button><button type="button" class="ghost" data-act="home">Saves</button></div>
+    <div class="adv-btns"><button type="button" data-act="roster">Roster</button><button type="button" data-act="coach" title="Coaching tendencies: pass rate, blitzing, coverage, tempo…">Coach</button><button type="button" data-act="log">Log</button><button type="button" class="ghost" data-act="home">Saves</button></div>
   </div>`;
   let body;
   if (run.status !== 'active' && !(run.node && run.node.stage === 'result')) body = summaryHTML();
@@ -404,6 +406,12 @@ function onRosterClick(e) {
   // keep the page behind in sync (team rating, warnings)
   render();
 }
+function openCoach() {
+  openModal(`<h3>Coaching</h3><p class="muted small">How ${esc(run.team.city)} ${esc(run.team.name)} call plays. Changes apply from the next battle.</p>
+    <div id="c-coach"></div><div class="modal-actions"><button type="button" class="primary" data-close>Done</button></div>`, (d) => {
+    coachControls($('#c-coach', d), run.team.coach, save);
+  });
+}
 function openLog() {
   openModal(`<h3>Adventure log</h3><ol class="adv-log">${run.log.slice().reverse().map((l) => `<li><span class="muted">Act ${l.act}</span> ${esc(l.text)}</li>`).join('')}</ol>
     <div class="modal-actions"><button type="button" class="ghost" data-close>Close</button></div>`);
@@ -443,6 +451,7 @@ function onClick(e) {
     case 'home': run = null; renderHome(); return;
     case 'roster': openRoster(); return;
     case 'log': openLog(); return;
+    case 'coach': openCoach(); return;
     case 'enter': A.enterNode(run, Number(b.dataset.r), Number(b.dataset.c)); break;
     case 'play': playBattle(); return;
     case 'draft': A.takeDraft(run, Number(b.dataset.i)); break;

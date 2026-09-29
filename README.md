@@ -29,7 +29,7 @@ A roguelike run for one team. You start with 23 random cards, each between the 5
 | ⛺ Rest stop | Heal every injury, recover a life, or earn coins |
 | ❓ Event | Free agents, trade offers, gambles, sponsors, two-a-days, and more |
 
-Opponents get stronger as the run goes on. You have **3 lives**: every loss costs one, and the run ends at zero. Injuries carry over between games (an injured card misses 2 battles). Battles use the normal game viewer, so you can watch them or sim to the end. The roster editor places your best healthy cards automatically, or you can set the lineup yourself. Runs are saved in your browser, and you can keep several going at once.
+Opponents get stronger as the run goes on. You have **3 lives**: every loss costs one, and the run ends at zero. Injuries carry over between games (an injured card misses 2 battles). Battles use the normal game viewer, so you can watch them or sim to the end. The roster editor places your best healthy cards automatically, or you can set the lineup yourself. The **Coach** button adjusts your coaching tendencies at any time, the same as in the team builder. Runs are saved in your browser, and you can keep several going at once.
 
 ### Cards
 Every card is a **Pokémon at a position**, for example Delphox QB or Delphox DB. All 1,025 Pokémon can play all 9 positions (QB, RB, WR, TE, OL, DL, LB, DB, K). A card's ratings are simply the Pokémon's own base stats, and each stat means something specific at each position:

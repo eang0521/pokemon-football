@@ -238,7 +238,7 @@ button.danger { color: var(--bad); }
 .b-slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .b-coach { margin-top: 12px; }
 .b-coach summary { cursor: pointer; font-weight: 700; }
-#b-coach { display: grid; gap: 6px; margin-top: 8px; }
+#b-coach, .coach-ctl { display: grid; gap: 6px; margin-top: 8px; }
 .cs { display: grid; grid-template-columns: 170px 1fr 34px; gap: 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
 .cs select { grid-column: 2 / -1; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .cs b { color: var(--text); text-align: right; }
