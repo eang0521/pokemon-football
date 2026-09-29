@@ -24,7 +24,10 @@ export function specialFrames(o) {
     let x, y;
     if (o.kind === 'kickoff') { x = o.kickX - (i === 0 ? 6 : 1); y = i === 0 ? W / 2 : 3 + (i - 1) * ((W - 6) / 5); }
     else if (o.kind === 'punt') { x = i === 0 ? o.kickX - 13 : o.kickX - 0.6; y = i === 0 ? o.kickY : o.kickY + [0, 0, -1.4, 1.4, -2.8, 2.8, 0][i] * 1; if (i === 6) x = o.kickX - 6; }
-    else { x = i === 0 ? o.kickX - 7.5 : i === 1 ? o.kickX - 7 : o.kickX - 0.6; y = i <= 1 ? o.kickY + (i === 0 ? -0.8 : 0.6) : o.kickY + [0, 0, -1.3, 1.3, -2.6, 2.6, 3.9][i]; }
+    // fg: [0] holder kneels beside the spot, [1] kicker sets up back and to the side
+    else if (i === 0) { x = o.kickX - 7; y = o.kickY - 0.7; }
+    else if (i === 1) { x = o.kickX - 9.8; y = o.kickY + 1.8; }
+    else { x = o.kickX - 0.6; y = o.kickY + [0, 0, -1.3, 1.3, -2.6, 2.6, 3.9][i]; }
     return { m: mover(x, y, spdOf(pl)), pl };
   });
   const R = o.receivers.map((pl, i) => {
@@ -79,7 +82,11 @@ export function specialFrames(o) {
     // --- players
     const rm = retIdx >= 0 ? all[retIdx].m : null;
     K.forEach((k, i) => {
-      if (o.kind === 'fg') { if (i > 1) step(k.m, k.m.x - 0.2, k.m.y, 0.2); else if (i === 0 && t > snapT - 0.4) step(k.m, o.kickX - 6.8, o.kickY - 0.2, 0.4); return; }
+      if (o.kind === 'fg') {
+        if (i > 1) step(k.m, k.m.x - 0.2, k.m.y, 0.2);
+        else if (i === 1 && t > snapT - 0.65) step(k.m, o.kickX - 7.4, o.kickY + 0.3, 0.8); // kicker's approach
+        return;
+      }
       if (t < snapT - (o.kind === 'kickoff' ? 0.6 : 0)) { if (o.kind === 'kickoff' && i > 0) step(k.m, o.kickX - 0.5, k.m.y, 0.6); return; }
       if (i === 0 && o.kind !== 'kickoff') { step(k.m, k.m.x + 0.5, k.m.y, 0.3); return; }
       const tx = rm ? (caught ? rm.x + rm.vx * 0.5 : o.landX) : o.landX;

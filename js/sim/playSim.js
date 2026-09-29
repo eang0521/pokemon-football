@@ -126,6 +126,7 @@ export function simulatePlay(opts) {
     tick(S);
     record(S);
   }
+  settleFall(S);
   if (!S.result) endPlay(S, { type: 'timeout' });
   return finalize(S);
 }
@@ -138,13 +139,16 @@ function runMotion(S) {
   const follower = S.defList.find((d) => d.man === fx && (d.role === 'man' || d.role === 'dog'));
   const fEnd = follower ? { x: follower.x0, y: follower.y0 } : null;
   const fStart = follower ? { x: follower.x0, y: clamp(S.ballY - (follower.y0 - S.ballY), 1, W - 1) } : null;
-  const n = 24; // 1.2 s
+  // ~6 yd/s average (9 at peak), at least 0.8 s
+  const n = Math.max(16, Math.ceil(Math.abs(endY - startY) / 6 / DT)), dur = n * DT;
+  const ease = (u) => u * u * (3 - 2 * u);
   S.design.motion = { idx: fx.idx, from: { x: fx.x0, y: startY }, to: { x: fx.x0, y: endY } };
   for (let k = 0; k <= n; k++) {
-    const u = k / n, e = u * u * (3 - 2 * u);
-    fx.x = fx.x0; fx.y = startY + (endY - startY) * e; fx.vy = (endY - startY) / 1.2;
-    if (follower) { follower.x = fStart.x; follower.y = fStart.y + (fEnd.y - fStart.y) * Math.max(0, e - 0.08); follower.vy = fx.vy; }
-    if (k < n) { S.t = r2(-1.2 + k * 0.05); record(S); }
+    const u = k / n, e = ease(u);
+    fx.x = fx.x0; fx.y = startY + (endY - startY) * e; fx.vy = (endY - startY) / dur;
+    // the man defender reacts a beat late but still arrives by the snap
+    if (follower) { follower.x = fStart.x; follower.y = fStart.y + (fEnd.y - fStart.y) * ease(Math.max(0, (u - 0.1) / 0.9)); follower.vy = fx.vy; }
+    if (k < n) { S.t = r2(-dur + k * DT); record(S); }
   }
   fx.x = fx.x0; fx.y = fx.y0; fx.vx = fx.vy = 0;
   if (follower) { follower.x = fEnd.x; follower.y = fEnd.y; follower.vx = follower.vy = 0; }
@@ -787,7 +791,7 @@ function resolveCatch(S) {
   if (oob) {
     if (recIn && Math.min(Math.abs(L.y), Math.abs(L.y - S.W)) < 0.6 && L.x <= 110 && S.rng.chance(0.35 + rec.r.awr * 0.003)) {
       // toe-tap
-      rec.x = L.x; rec.y = clamp(L.y, 0.2, S.W - 0.2);
+      rec.y = clamp(rec.y, 0.2, S.W - 0.2);
       event(S, `${rec.pl.name} tiptoes the sideline!`, 'big');
       catchMade(S, rec, true);
       return;
@@ -824,7 +828,8 @@ function resolveCatch(S) {
 
 function catchMade(S, rec, oobCatch, contestedBy) {
   S.completion = { rec, x: rec.x };
-  rec.x = S.ball.flight.tx; rec.y = clamp(S.ball.flight.ty, 0.1, S.W - 0.1);
+  // the ball comes to his hands (he's within reach); don't move him to it
+  rec.y = clamp(rec.y, 0.1, S.W - 0.1);
   setCarrier(S, rec);
   if (oobCatch) return endPlay(S, { type: 'dead', oob: true });
   if (rec.x >= 100) return endPlay(S, { type: 'td' });
@@ -834,10 +839,11 @@ function catchMade(S, rec, oobCatch, contestedBy) {
   rec.vx *= 0.5; rec.vy *= 0.5;
 }
 
+// The ball comes to the defender's hands (he's within reach of it); he isn't moved to it.
 function intercept(S, d, how) {
-  S.interception = { by: d, x: S.ball.flight.tx };
+  d.x = clamp(d.x, -9.5, 109.5); d.y = clamp(d.y, 0.2, S.W - 0.2);
+  S.interception = { by: d, x: d.x };
   event(S, `INTERCEPTED! ${d.pl.name} ${how}!`, 'big');
-  d.x = clamp(S.ball.flight.tx, -9.5, 109.5); d.y = clamp(S.ball.flight.ty, 0.2, S.W - 0.2);
   setCarrier(S, d);
   for (const e of S.ents) if (e.side === 'O') { e.role = 'pursue'; e.react = 0.3; }
   if (d.x >= 100 && S.rng.chance(0.75)) {
@@ -1335,6 +1341,11 @@ function breakPair(S, p) {
   S.pairs = S.pairs.filter((x) => x !== p);
 }
 
+function slideTo(e, x, y, max) {
+  const dx = x - e.x, dy = y - e.y, l = hyp(dx, dy);
+  if (l <= max) { e.x = x; e.y = y; } else { e.x += dx / l * max; e.y += dy / l * max; }
+}
+
 function updatePairs(S) {
   for (const p of S.pairs.slice()) {
     const { a, d, kind } = p;
@@ -1349,9 +1360,10 @@ function updatePairs(S) {
     p.cx += ux * v * DT; p.cy += uy * v * DT;
     // defender works laterally toward the ball
     if (kind !== 'pass') p.cy += clamp(goal.y - p.cy, -1, 1) * 0.6 * DT * (d.r.agi / 80);
-    // blocker sits between the defender and his target
-    d.x = p.cx - ux * 0.42; d.y = p.cy - uy * 0.42;
-    a.x = p.cx + ux * 0.42; a.y = p.cy + uy * 0.42;
+    // blocker sits between the defender and his target (slide into place; no snapping)
+    const slide = Math.abs(v) * DT + 0.22;
+    slideTo(d, p.cx - ux * 0.42, p.cy - uy * 0.42, slide);
+    slideTo(a, p.cx + ux * 0.42, p.cy + uy * 0.42, slide);
     d.vx = a.vx = ux * v; d.vy = a.vy = uy * v;
     // shed?
     const held = S.t - p.t0;
@@ -1483,6 +1495,7 @@ function checkCarrier(S) {
       if (c.side === 'O' && S.play.type === 'run' && (S.situation.toGo ?? 10) <= 2 && c.x < S.los + 3) fall += 0.8;
       fall *= 1 - Math.min(0.9, o.mods.sturdy || 0); // Rock: tacklers can't be driven back either
       const moving = (c.vx * g) > 1;
+      S.fall = { e: c, x0: c.x };
       c.x += g * (moving ? fall : fall * 0.3);
       if (c.side === 'O' && c.x >= 100) return endPlay(S, { type: 'td', reach: true });
       return endPlay(S, { type: 'tackle' });
@@ -1565,6 +1578,24 @@ function endPlay(S, info) {
   S.result = { ...info, t: S.t };
   const c = S.carrier;
   if (c) { c.vx = 0; c.vy = 0; }
+}
+
+// The tackle's fall-forward is applied in one step; replay it over a few frames so the pile slides instead of hopping.
+function settleFall(S) {
+  const f = S.fall;
+  if (!f || S.carrier !== f.e || !S.frames.length) return;
+  const c = f.e, x1 = c.x, n = Math.max(1, Math.ceil(Math.abs(x1 - f.x0) / 0.35));
+  if (n < 2) return;
+  const t = S.t;
+  S.frames.pop();
+  S.t = r2(t - DT);
+  for (let i = 1; i <= n; i++) {
+    c.x = f.x0 + (x1 - f.x0) * (i / n);
+    if (S.ball.holder === c) S.ball.x = c.x;
+    S.t = r2(S.t + DT);
+    record(S);
+  }
+  c.x = x1;
 }
 
 function record(S) {
@@ -1718,6 +1749,7 @@ export function simulateReturn(opts) {
     returnTick(S, kind, ret, kicker);
     record(S);
   }
+  settleFall(S);
   if (!S.result) endPlay(S, { type: 'tackle' });
   const R = S.result, c = S.carrier;
   const out = {
