@@ -69,6 +69,20 @@ export function createEngine() {
         const { rec: r, transfer } = recMsg(rec);
         return [{ msg: { type: 'rec', rec: r, state: stateOf() }, transfer }];
       }
+      // Sim until only msg.secsLeft remain in regulation (e.g. 180 = 3:00 left in the 4th),
+      // then hand control back to normal play-by-play.
+      if (msg.type === 'simTo') {
+        const out = [];
+        let batch = [], transfer = [], last = null, rec;
+        while (!game.final && secsLeft(game) > msg.secsLeft && (rec = game.next())) {
+          const m = recMsg(rec);
+          batch.push(m.rec); transfer.push(...m.transfer); last = m.rec;
+          if (batch.length >= 25) { out.push({ msg: { type: 'batch', recs: batch, progress: estimate(game) }, transfer }); batch = []; transfer = []; }
+        }
+        out.push({ msg: { type: 'batch', recs: batch, progress: 1 }, transfer });
+        out.push({ msg: game.final ? { type: 'final', state: stateOf() } : { type: 'simmed', state: stateOf(), lastId: last?.id ?? null } });
+        return out;
+      }
       if (msg.type === 'simToEnd') {
         const out = [];
         let batch = [], transfer = [], count = 0, rec;
@@ -85,6 +99,8 @@ export function createEngine() {
     },
   };
 }
+
+const secsLeft = (g) => (g.quarter >= 5 ? 0 : (4 - g.quarter) * 360 + g.clock);
 
 function estimate(g) {
   const secs = g.quarter >= 5 ? 1440 : (g.quarter - 1) * 360 + (360 - g.clock);

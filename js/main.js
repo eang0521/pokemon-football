@@ -241,6 +241,7 @@ function onEngineMessage(m) {
     ctl.requested = Math.max(0, ctl.requested - 1);
     m.rec.state = m.state;
     storeHistory(m.rec);
+    if (ctl.simming) return; // skipped over by a sim in progress
     ctl.queue.push(m.rec);
     if (ctl.phase === 'idle' || ctl.phase === 'waiting') loadNext();
     requestMore();
@@ -251,6 +252,7 @@ function onEngineMessage(m) {
     $('#sim-progress') && ($('#sim-progress').textContent = `Simulating… ${Math.round(m.progress * 100)}%`);
     return;
   }
+  if (m.type === 'simmed') { finishSimTo(m); return; }
   if (m.type === 'final') {
     ctl.requested = 0;
     ctl.noMore = true;
@@ -460,6 +462,35 @@ $('#btn-sim').addEventListener('click', () => {
   el.classList.remove('hidden');
   ctl.client.send({ type: 'simToEnd' });
 });
+// "Sim to 3:00": skip ahead, then resume normal play-by-play from there.
+const SIM_TO_SECS = 180;
+$('#btn-sim3').addEventListener('click', () => {
+  if (!ctl.game || ctl.phase === 'final' || ctl.simming || !canSimTo()) return;
+  if (ctl.replay) endReplay();
+  ctl.simming = true;
+  setPlaying(false);
+  ctl.queue = [];
+  const el = $('#final');
+  el.innerHTML = '<h3 id="sim-progress">Simulating…</h3><div class="stars">Skipping ahead to 3:00 left in the 4th quarter.</div>';
+  el.classList.remove('hidden');
+  ctl.client.send({ type: 'simTo', secsLeft: SIM_TO_SECS });
+});
+function canSimTo() { const g = ctl.game; return !!g && !g.final && g.quarter < 5 && g.secsLeft > SIM_TO_SECS; }
+function syncSimTo() { $('#btn-sim3').disabled = !canSimTo() || ctl.phase === 'final'; }
+function finishSimTo(m) {
+  ctl.simming = false;
+  ctl.queue = []; ctl.requested = 0;
+  ctl.game.apply(m.state);
+  ctl.lastRec = null; // new spot on the field: snap the camera
+  ctl.cur = null;
+  ctl.phase = 'idle';
+  $('#final').classList.add('hidden');
+  renderScorebug(ctl.game.snapshot());
+  renderPanels();
+  $('#lastplay').innerHTML = `<span class="muted">Simulated to ${clockText(ctl.game.snap.clock)} left in the ${qText(ctl.game.quarter)} quarter. Press <b>Play</b> to watch the finish.</span>`;
+  requestMore();
+}
+
 function finishSim() {
   ctl.simming = false;
   ctl.game.apply(ctl.finalState);
@@ -523,6 +554,7 @@ let capEl;
 function showCaption(text) {
   if (!capEl) {
     capEl = document.createElement('div');
+    capEl.className = 'caption';
     capEl.style.cssText = 'position:absolute;left:50%;bottom:12px;transform:translateX(-50%);background:rgba(14,17,22,.85);border:1px solid #2e3844;border-radius:8px;padding:6px 12px;font-weight:700;font-size:13px;pointer-events:none;white-space:nowrap';
     $('#stage').appendChild(capEl);
   }
@@ -567,6 +599,7 @@ selectTab(store.get('tab', 'pbp'));
 function renderPanels() {
   const g = ctl.game;
   if (!g) return;
+  syncSimTo();
   renderPBP(g, g.log.length);
   renderBox(g);
   renderTeamStats(g);
