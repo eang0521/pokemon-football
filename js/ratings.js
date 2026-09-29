@@ -75,7 +75,6 @@ export function buildPlayer(team, pos, entry) {
     id: `${team.id}-${pos}`,
     teamId: team.id,
     pos,
-    num: entry.num,
     slug: entry.mon,
     name: p.name,
     types: p.types,

@@ -445,7 +445,7 @@ function renderRosters(g) {
     <div class="muted" style="font-size:12px;margin-bottom:6px">${esc(t.coach.name)} · ${esc(t.coach.style)}. Ratings come from base stats: Speed→SPD/AGI, Attack→STR, Defense→TGH, Sp. Atk→ARM, Sp. Def→AWR/ACC/HANDS, weight→mass.</div>
     <table class="st"><thead><tr><th>Player</th><th>OVR</th>${cols.map((c) => `<th>${c.toUpperCase()}</th>`).join('')}</tr></thead><tbody>
     ${rows.map((p) => `<tr title="HP ${p.base.hp} / Atk ${p.base.atk} / Def ${p.base.def} / SpA ${p.base.spa} / SpD ${p.base.spd} / Spe ${p.base.spe} · ${p.height} m, ${p.weight} kg">
-      <td class="pl"><img src="${spriteUrl(p)}" alt="" loading="lazy" referrerpolicy="no-referrer"><div><b>#${p.num} ${esc(p.name)}</b> <span class="muted">${p.pos}</span><br>${typeChips(p.types)}</div></td>
+      <td class="pl"><img src="${spriteUrl(p)}" alt="" loading="lazy" referrerpolicy="no-referrer"><div><b>${esc(p.name)}</b> <span class="muted">${p.pos}</span><br>${typeChips(p.types)}</div></td>
       <td class="ovr">${p.ovr}</td>${cols.map((c) => `<td>${p.ratings[c]}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
   $('#tab-roster').innerHTML = html;
   $$('#tab-roster [data-rt]').forEach((b) => b.addEventListener('click', () => { rosterTeam = Number(b.dataset.rt); renderRosters(g); }));

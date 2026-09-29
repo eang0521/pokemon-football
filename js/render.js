@@ -152,9 +152,9 @@ export class FieldRenderer {
         const el = document.createElement('div');
         el.className = 'token';
         const team = game.teams.find((x) => x.id === pl.teamId);
-        el.innerHTML = `<div class="base"></div><img alt="${pl.name}" draggable="false" /><span class="num">${pl.num}<span class="nm">${pl.name}</span></span>`;
+        el.innerHTML = `<div class="base"></div><img alt="${pl.name}" draggable="false" /><span class="label">${pl.name}</span>`;
         el.querySelector('.base').style.background = hexA(team.colors.primary, 0.85);
-        el.querySelector('.num').style.background = team.colors.primary;
+        el.querySelector('.label').style.background = team.colors.primary;
         const img = el.querySelector('img');
         img.referrerPolicy = 'no-referrer';
         img.onerror = () => { if (!img.dataset.fallback) { img.dataset.fallback = '1'; img.src = spriteUrl(pl, 'home'); } };

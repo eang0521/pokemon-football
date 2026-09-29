@@ -80,9 +80,8 @@ button.on { background: var(--accent2); border-color: var(--accent2); color: #ff
 .token img { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); object-fit: contain; image-rendering: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,.6)); }
 .token.bw img { image-rendering: pixelated; }
 .token img.flip { transform: translateX(-50%) scaleX(-1); }
-.token .num { position: absolute; left: 50%; bottom: -2px; transform: translate(-50%, 100%); font: 700 10px/1 var(--font); padding: 1px 4px; border-radius: 4px; color: #fff; white-space: nowrap; text-shadow: 0 1px 1px rgba(0,0,0,.5); }
-.token .nm { display: none; }
-.names .token .nm { display: inline; margin-left: 3px; font-weight: 600; }
+.token .label { display: none; position: absolute; left: 50%; bottom: -2px; transform: translate(-50%, 100%); font: 700 10px/1 var(--font); padding: 1px 4px; border-radius: 4px; color: #fff; white-space: nowrap; text-shadow: 0 1px 1px rgba(0,0,0,.5); }
+.names .token .label { display: block; }
 .token.engaged .base { border-color: #ffcb05; }
 .token.stun img { opacity: .7; transform: translateX(-50%) rotate(20deg); }
 .token.carrier .base { box-shadow: 0 0 0 3px rgba(255, 203, 5, .9), 0 1px 3px rgba(0,0,0,.5); }
