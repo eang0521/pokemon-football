@@ -9,7 +9,7 @@
 export const TIER_COUNTS = [2, 4, 6];
 
 export const SYNERGIES = {
-  normal: { name: 'Normal', kind: 'stat', stat: 'hp', title: 'Endurance', desc: 'Boosts HP — more stamina, so they tire more slowly.' },
+  normal: { name: 'Normal', kind: 'adapt', title: 'Adaptable', desc: 'No weak spots: each Pokémon\'s below-average base stats are pulled up toward its own average.' },
   fighting: { name: 'Fighting', kind: 'stat', stat: 'atk', title: 'Brawler', desc: 'Boosts Attack (arm, power, blocking, tackling, power rush — by position).' },
   steel: { name: 'Steel', kind: 'stat', stat: 'def', title: 'Iron', desc: 'Boosts Defense (toughness, pass blocking, run stopping, press — by position).' },
   psychic: { name: 'Psychic', kind: 'stat', stat: 'spa', title: 'Mind', desc: 'Boosts Sp. Atk (accuracy, route running, finesse rush, ball skills — by position).' },
@@ -18,7 +18,7 @@ export const SYNERGIES = {
   dragon: { name: 'Dragon', kind: 'mech', key: 'clutch', title: 'Outrage', desc: 'Clutch: every rating rises on 3rd & 4th down, in the red zone, and in one-score 4th quarters or overtime.' },
   fire: { name: 'Fire', kind: 'mech', key: 'burst', title: 'Burst', desc: 'Faster acceleration: explosive routes, runs, rushes and pursuit.' },
   water: { name: 'Water', kind: 'mech', key: 'flow', title: 'Flow', desc: 'Keep speed through direction changes: sharper cuts, route breaks and breaks on the ball.' },
-  grass: { name: 'Grass', kind: 'mech', key: 'regen', title: 'Photosynthesis', desc: 'Faster energy recovery and less drain per snap.' },
+  grass: { name: 'Grass', kind: 'mech', key: 'growth', key2: 'regen', title: 'Photosynthesis', desc: 'Grows stronger as the game goes on: a ratings boost that builds each quarter, plus faster energy recovery.' },
   ice: { name: 'Ice', kind: 'mech', key: 'chill', title: 'Chill', desc: 'Opponents they make contact with are briefly slowed.' },
   poison: { name: 'Poison', kind: 'mech', key: 'toxic', title: 'Toxic', desc: 'Opponents they make contact with lose extra energy.' },
   ground: { name: 'Ground', kind: 'mech', key: 'leverage', title: 'Leverage', desc: 'Win the push in blocking battles — on either side of the block.' },
@@ -32,7 +32,7 @@ export const SYNERGIES = {
 // Per-tier magnitudes. Stat types: fraction added to the base stat.
 // Mechanics: see comments (units used by the sim).
 export const SYNERGY_VALUES = {
-  normal: [0.756, 1.515, 2.525],
+  normal: [0.25, 0.5, 0.8], // Adaptable: fraction of the gap to the Pokémon's own average stat closed
   fighting: [0.06, 0.119, 0.186],
   steel: [0.076, 0.151, 0.238],
   psychic: [0.044, 0.087, 0.136],
@@ -41,7 +41,8 @@ export const SYNERGY_VALUES = {
   clutch: [0.015, 0.031, 0.054], // rating multiplier bonus in clutch situations
   burst: [0.015, 0.031, 0.054], // acceleration multiplier bonus
   flow: [0.083, 0.166, 0.277], // fraction of speed loss avoided on sharp turns
-  regen: [1.022, 2.041, 3.571], // recovery bonus / drain reduction
+  growth: [0.025, 0.05, 0.085], // rating bonus reached by the 4th quarter (0 in the 1st)
+  regen: [0.2, 0.4, 0.7], // Grass: energy recovery bonus / drain reduction
   chill: [0.591, 1.182, 2.009], // seconds an opponent is slowed after contact
   toxic: [1.042, 2.085, 3.647], // extra energy lost by an opponent per contact
   leverage: [1.379, 2.759, 4.828], // added to their side of a blocking battle
@@ -54,7 +55,7 @@ export const SYNERGY_VALUES = {
 
 export const valueOf = (type, tier) => {
   const s = SYNERGIES[type];
-  const vals = SYNERGY_VALUES[s.kind === 'stat' ? type : s.key];
+  const vals = SYNERGY_VALUES[s.kind === 'mech' ? s.key : type];
   return tier > 0 ? vals[tier - 1] : 0;
 };
 
@@ -81,7 +82,15 @@ export function playerEffects(card, active) {
     if (!tier) continue;
     const s = SYNERGIES[t];
     if (s.kind === 'stat') stat[s.stat] = (stat[s.stat] || 0) + valueOf(t, tier);
+    else if (s.kind === 'adapt' && card.base) {
+      // lift every below-average base stat part of the way to the Pokémon's average
+      const avg = Object.values(card.base).reduce((a, b) => a + b, 0) / 6;
+      for (const k in card.base) {
+        if (card.base[k] < avg) stat[k] = (stat[k] || 0) + (valueOf(t, tier) * (avg - card.base[k])) / card.base[k];
+      }
+    }
     else mods[s.key] = (mods[s.key] || 0) + valueOf(t, tier);
+    if (s.key2) mods[s.key2] = (mods[s.key2] || 0) + SYNERGY_VALUES[s.key2][tier - 1];
   }
   return { stat, mods };
 }

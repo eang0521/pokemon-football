@@ -752,7 +752,7 @@ function resolveCatch(S) {
     const pCatch = clamp(0.5 + (hand - cov) * 0.007 + edge + (rec.height - bestD.height) * 0.08, 0.15, 0.85);
     const pInt = clamp(0.1 + (bestD.r.ball - 60) * 0.003 - edge * 0.3, 0.02, 0.3);
     const roll = S.rng.next();
-    if (dd < dr - 0.4 && S.rng.chance(0.07)) return endPlay(S, { type: 'dpi', defender: bestD, spot: L.x });
+    if (dd < dr - 0.4 && S.rng.chance(0.07 * (1 - (bestD.mods.discipline || 0)))) return endPlay(S, { type: 'dpi', defender: bestD, spot: L.x });
     if (roll < pCatch) { event(S, `${rec.pl.name} makes a contested catch!`, 'big'); return catchMade(S, rec, false, bestD); }
     if (roll < pCatch + pInt) return intercept(S, bestD, 'jumps the route');
     credit(S, bestD, 'pd', 1);

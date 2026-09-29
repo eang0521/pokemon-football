@@ -316,8 +316,13 @@ export class Game {
 
     // pre-snap penalties
     const pr = this.rng.next();
-    if (pr < 0.012) return this.preSnapPenalty('O', 'False start', team.coach);
-    if (pr < 0.022) return this.preSnapPenalty('D', 'Offside', dteam.coach);
+    if (pr < 0.012) {
+      const who = this.rng.pick(this.depth[i].offense().filter((c) => c.pos !== 'QB'));
+      if (!this.disciplined(who)) return this.preSnapPenalty('O', 'False start', who);
+    } else if (pr < 0.022) {
+      const who = this.rng.pick(this.depth[d].defense().filter((c) => c.pos !== 'DB'));
+      if (!this.disciplined(who)) return this.preSnapPenalty('D', 'Offside', who);
+    }
 
     // play calls
     const oc = callOffense(team, sit, this.rng);
@@ -337,8 +342,8 @@ export class Game {
     if (this.rng.chance(0.25)) flip = -flip;
     return {
       rng: this.rng, W: FIELD_W, los: ballOn, ballY: this.ballY, flip,
-      offense: { slots: this.depth[i].simOffense({ clutch }), personnel: pers },
-      defense: { slots: this.depth[d].simDefense({ clutch }) },
+      offense: { slots: this.depth[i].simOffense({ clutch, quarter: this.quarter }), personnel: pers },
+      defense: { slots: this.depth[d].simDefense({ clutch, quarter: this.quarter }) },
       play, dcall, form: play.forms[pers],
       situation: {
         aggression: this.teams[i].coach.aggression, deepBias: this.teams[i].coach.deepRate - 0.5,
@@ -389,11 +394,12 @@ export class Game {
     if (this.drive) this.drive.plays++;
 
     // --- post-play penalties
-    const holding = !res.turnover && !res.td && res.yards > 3 && (res.kind === 'run' || res.completion) && this.rng.chance(0.028);
+    const holder = this.rng.pick(this.depth[i].offense().filter((c) => c.pos === 'OL' || c.pos === 'TE'));
+    const holding = !res.turnover && !res.td && res.yards > 3 && (res.kind === 'run' || res.completion) && this.rng.chance(0.028) && !this.disciplined(holder);
     if (res.penalty?.type === 'DPI' || holding) {
       let text;
       if (holding) {
-        const off = this.rng.pick(this.depth[i].offense().filter((c) => c.pos === 'OL' || c.pos === 'TE'));
+        const off = holder;
         const yds = Math.min(10, Math.floor(los / 2));
         this.ballOn = los - yds; this.toGo += yds;
         T.pen++; T.penY += yds;
@@ -567,7 +573,13 @@ export class Game {
     return null; // checkQuarterEnd handles it in next()
   }
 
-  preSnapPenalty(side, name, coach) {
+  // Grass (discipline): chance the would-be offender keeps his composure
+  disciplined(card) {
+    const L = this.depth[this.teamOf[card.id]]?.live[card.id];
+    return !!(L?.discipline && this.rng.chance(L.discipline));
+  }
+
+  preSnapPenalty(side, name, who) {
     const i = this.poss, d = 1 - i;
     const sit = this.situation();
     // show the formation briefly
@@ -580,13 +592,11 @@ export class Game {
     let text;
     if (side === 'O') {
       const yds = Math.min(5, Math.floor(this.ballOn / 2));
-      const who = this.rng.pick(this.depth[i].offense().filter((c) => c.pos !== 'QB'));
       this.ballOn -= yds; this.toGo += yds;
       this.stats.teams[i].pen++; this.stats.teams[i].penY += yds;
       text = `PENALTY: ${name}, ${who.name} (${team(this, i)}), ${yds} yards. ${this.ddText()}.`;
     } else {
       const yds = Math.min(5, Math.floor((100 - this.ballOn) / 2));
-      const who = this.rng.pick(this.depth[d].defense().filter((c) => c.pos !== 'DB'));
       this.ballOn += yds; this.toGo -= yds;
       this.stats.teams[d].pen++; this.stats.teams[d].penY += yds;
       if (this.toGo <= 0) { this.down = 1; this.toGo = Math.min(10, 100 - this.ballOn); this.stats.teams[i].first++; }

@@ -51,7 +51,7 @@ Count each type among the 7 players a unit has on the field (dual types count fo
 
 | Type | Synergy | Effect |
 |---|---|---|
-| Normal | Endurance | +HP (stamina) |
+| Normal | Adaptable | No weak spots: below-average base stats are pulled up toward the Pokémon's own average |
 | Fighting | Brawler | +Attack (arm, power, blocking, tackling, depending on position) |
 | Steel | Iron | +Defense (toughness, pass blocking, run stopping, press) |
 | Psychic | Mind | +Sp. Atk (accuracy, route running, finesse rush, ball skills) |
@@ -60,7 +60,7 @@ Count each type among the 7 players a unit has on the field (dual types count fo
 | Dragon | Outrage | Clutch: every rating rises on 3rd/4th down, in the red zone, and in one-score 4th quarters or overtime |
 | Fire | Burst | Faster acceleration |
 | Water | Flow | Keep speed through cuts, route breaks, and breaks on the ball |
-| Grass | Photosynthesis | Faster energy recovery, less drain per snap |
+| Grass | Photosynthesis | Grows stronger each quarter (a ratings boost that builds to the 4th), plus faster energy recovery |
 | Ice | Chill | Opponents they make contact with are briefly slowed |
 | Poison | Toxic | Opponents they make contact with lose extra energy |
 | Ground | Leverage | Win the push in blocking battles, on either side of the block |

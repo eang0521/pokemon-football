@@ -53,9 +53,10 @@ export class TeamDepth {
     this.synergy[unit] = syn;
     return cards.map((c) => {
       const types = ov && ov.members.has(c.id) && !c.types.includes(ov.type) ? [...c.types, ov.type] : c.types;
-      const { stat, mods } = playerEffects({ types }, syn.active);
+      const { stat, mods } = playerEffects({ types, base: c.base }, syn.active);
       let r = Object.keys(stat).length ? cardRatings(c.slug, c.pos, stat) : c.ratings;
       let m = this.fatigueMult(c);
+      if (mods.growth) m *= 1 + mods.growth * Math.min(3, Math.max(0, (ctx.quarter || 1) - 1)) / 3; // Grass: builds each quarter
       if (mods.clutch && ctx.clutch) m *= 1 + mods.clutch;
       this.live[c.id] = { stm: r.stm, regen: mods.regen || 0 };
       if (m !== 1) {
