@@ -39,6 +39,8 @@ const root = () => $('#adv-root');
 export function initAdventure(hooks) {
   H = hooks;
   root().addEventListener('click', onClick);
+  // remember whether the shop's "Sell cards" section is open across re-renders
+  root().addEventListener('toggle', (e) => { if (e.target.matches?.('.shop-sell') && run?.node) run.node.sellOpen = e.target.open; }, true);
 }
 export function showAdventureHome() { run = null; H.showScreen('adventure'); renderHome(); }
 export function showAdventure() { H.showScreen('adventure'); if (run) render(); else renderHome(); }
@@ -284,7 +286,7 @@ function shopHTML(n) {
       const na = it.sold || run.coins < it.price || (it.key === 'life' && run.lives >= run.maxLives) || (it.key === 'heal' && !run.cards.some((c) => c.inj > 0));
       return `<div class="shop-item"><span>${esc(it.name)}</span><button type="button" data-act="item" data-k="${it.key}" ${na ? 'disabled' : ''}>${it.sold ? 'Bought' : `🪙 ${it.price}`}</button></div>`;
     }).join('')}</div>
-    <details class="shop-sell"><summary>Sell cards (${run.cards.length} in your collection)</summary>
+    <details class="shop-sell" ${n.sellOpen ? 'open' : ''}><summary>Sell cards (${run.cards.length} in your collection)</summary>
       <p class="muted small">Cards in your lineup are marked. If you sell one, the next best card takes its slot.</p>
       <div class="acard-grid">${sellable.map((c) => cardTile(c, {
         note: inLineup.has(c.uid) ? 'in lineup' : 'reserve',
