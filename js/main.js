@@ -9,6 +9,7 @@ import { openBuilder, wireBuilder, TYPE_COLORS, synergyChips, unitCounts } from 
 import { encodeTeam, decodeTeam } from './teamcode.js';
 import { openModal, closeModal } from './modal.js';
 import { saveCustomTeam } from './storage.js';
+import { initAdventure, showAdventureHome, showAdventure } from './adventure/ui.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -60,11 +61,19 @@ function importDialog(prefill = '') {
 $('#btn-import').addEventListener('click', () => importDialog());
 
 function showScreen(name) {
-  for (const id of ['setup', 'builder', 'game']) $(`#${id}`).classList.toggle('hidden', id !== name);
-  $('#btn-new').classList.toggle('hidden', name === 'setup');
-  $('#btn-new').textContent = name === 'builder' ? 'Back to teams' : 'New game';
+  for (const id of ['setup', 'builder', 'game', 'adventure']) $(`#${id}`).classList.toggle('hidden', id !== name);
+  const adv = name === 'adventure' || (name === 'game' && ctl.adventure);
+  $('#btn-new').classList.toggle('hidden', name === 'setup' || name === 'adventure');
+  $('#btn-new').textContent = name === 'builder' ? 'Back to teams' : adv ? 'Back to adventure' : 'New game';
+  $$('.modes [data-mode]').forEach((b) => b.classList.toggle('on', (b.dataset.mode === 'adventure') === !!adv));
+  if (name !== 'game') { ctl.playing = false; }
   window.scrollTo(0, 0);
 }
+$$('.modes [data-mode]').forEach((b) => b.addEventListener('click', () => {
+  if (ctl.adventure && !$('#game').classList.contains('hidden')) { leaveAdventureGame(); return; }
+  if (b.dataset.mode === 'adventure') { history.replaceState(null, '', `${location.pathname}#adventure`); showAdventure(); }
+  else { history.replaceState(null, '', location.pathname); ctl.adventure = null; showScreen('setup'); renderTeamGrid(); }
+}));
 
 // ==========================================================================
 // Setup screen
@@ -149,6 +158,7 @@ $('#btn-start').addEventListener('click', () => {
 });
 $('#btn-new').addEventListener('click', () => {
   ctl.playing = false;
+  if (ctl.adventure) { leaveAdventureGame(); return; }
   showScreen('setup');
   renderTeamGrid();
   history.replaceState(null, '', location.pathname);
@@ -165,7 +175,30 @@ const ctl = {
 };
 
 function startGame(awayId, homeId, seed) {
-  const away = findTeam(awayId), home = findTeam(homeId);
+  ctl.adventure = null;
+  startGameWith(findTeam(awayId), findTeam(homeId), seed);
+}
+
+// Adventure battles: the player is the home team; the result goes back to the adventure.
+function startBattle(away, home, seed, hooks) {
+  ctl.adventure = hooks;
+  startGameWith(away, home, seed);
+}
+function leaveAdventureGame() {
+  const h = ctl.adventure;
+  ctl.playing = false;
+  ctl.client?.terminate(); ctl.client = null;
+  ctl.adventure = null;
+  history.replaceState(null, '', `${location.pathname}#adventure`);
+  if (h && ctl.game?.final) h.onDone(adventureResult()); else h?.onAbort();
+}
+function adventureResult() {
+  const g = ctl.game;
+  const injuredSlots = Object.values(g.players).filter((p) => p.teamId === 'adv' && p.injured).map((p) => p.id.slice(4).split('@')[0]);
+  return { pf: g.score[1], pa: g.score[0], injuredSlots };
+}
+
+function startGameWith(away, home, seed) {
   ctl.client?.terminate();
   Object.assign(ctl, { game: null, cur: null, phase: 'idle', lastRec: null, queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null });
   showScreen('game');
@@ -176,10 +209,11 @@ function startGame(awayId, homeId, seed) {
     ctl.renderer = new FieldRenderer({ stage: $('#stage'), field: $('#field'), overlay: $('#overlay'), tokens: $('#tokens'), onPlayerHover: showPlayerCard });
   } else { ctl.renderer.tokens.clear(); ctl.renderer.lastScale = null; }
   ctl.renderer.spriteStyle = ctl.opts.sprites;
-  history.replaceState(null, '', `?away=${urlId(away)}&home=${urlId(home)}&seed=${seed}`);
+  if (ctl.adventure) history.replaceState(null, '', `${location.pathname}#adventure`);
+  else history.replaceState(null, '', `?away=${urlId(away)}&home=${urlId(home)}&seed=${seed}`);
   $('#lastplay').innerHTML = '<span class="muted">Setting up the game…</span>';
   ctl.client = new EngineClient(onEngineMessage);
-  ctl.client.send({ type: 'new', away, home, seed, options: { injuries: $('#opt-injuries').checked } });
+  ctl.client.send({ type: 'new', away, home, seed, options: { injuries: ctl.adventure ? true : $('#opt-injuries').checked } });
   setPlaying(false);
 }
 
@@ -293,9 +327,10 @@ function onFinal() {
     <div class="stars">${stars.map(esc).join('<br>')}</div>
     <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;justify-content:center">
       ${nHi ? `<button class="primary" id="btn-hi" type="button">▶ Watch highlights (${nHi})</button>` : ''}
-      <button id="btn-rematch" type="button">Rematch (new seed)</button><button id="btn-box" type="button">View box score</button></div>`;
+      ${ctl.adventure ? '<button id="btn-adv" type="button" class="primary">Continue adventure ▶</button>' : '<button id="btn-rematch" type="button">Rematch (new seed)</button>'}<button id="btn-box" type="button">View box score</button></div>`;
   el.classList.remove('hidden');
-  $('#btn-rematch').onclick = () => startGame(g.teams[0].id, g.teams[1].id, Math.floor(Math.random() * 1e9));
+  if (ctl.adventure) $('#btn-adv').onclick = () => leaveAdventureGame();
+  else $('#btn-rematch').onclick = () => startGame(g.teams[0].id, g.teams[1].id, Math.floor(Math.random() * 1e9));
   $('#btn-box').onclick = () => { el.classList.add('hidden'); selectTab('box'); };
   if (nHi) $('#btn-hi').onclick = () => { el.classList.add('hidden'); startReplay(highlightIds(), 'Highlights'); };
 }
@@ -659,7 +694,9 @@ function renderRosters(g) {
 
 // ==========================================================================
 // Boot
+initAdventure({ showScreen, startBattle });
 renderTeamGrid();
+if (location.hash === '#adventure') showAdventureHome();
 const qp = new URLSearchParams(location.search);
 if (qp.get('team')) importDialog(qp.get('team'));
 if (qp.get('away') && qp.get('home') && findTeam(qp.get('away')) && findTeam(qp.get('home'))) {

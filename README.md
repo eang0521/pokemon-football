@@ -15,6 +15,22 @@ A static, browser-only 7-on-7 tackle football simulation where every player is a
 - **Smooth playback.** The simulation runs in a Web Worker and prefetches upcoming plays, so the page stays responsive, even during "Sim to end".
 - **Stats.** Box score, team stats, a drive chart, play-by-play, a live depth chart with energy, and players of the game.
 
+### Adventure mode
+A roguelike run for one team. You start with 23 random cards, each between the 5th and 15th percentile at its position, and work your way through **three acts**. Each act is a branching map (Slay the Spire style) that ends in a boss: a Gym Leader, then the Elite Four, then the Champion. At every step you choose the next stop:
+
+| Stop | What happens |
+|---|---|
+| ⚔️ Battle | Play a random team. Win to draft 1 of 3 cards from their roster, plus coins |
+| 💀 Elite battle | A stronger, type-themed team. Win to draft 2 of 4 cards and more coins |
+| 👑 Boss | Beat it to finish the act (and recover a life). Losing costs a life, and you try again |
+| 🎁 Card pack | 5 free cards, with a chance at rare, epic, and legendary pulls |
+| 🛒 Shop | Buy cards, packs, healing, or an extra life; sell cards you don't need |
+| 💪 Training camp | Boost a card's two most important stats, or teach it a new position |
+| ⛺ Rest stop | Heal every injury, recover a life, or earn coins |
+| ❓ Event | Free agents, trade offers, gambles, sponsors, two-a-days, and more |
+
+Opponents get stronger as the run goes on. You have **3 lives**: every loss costs one, and the run ends at zero. Injuries carry over between games (an injured card misses 2 battles). Battles use the normal game viewer, so you can watch them or sim to the end. The roster editor places your best healthy cards automatically, or you can set the lineup yourself. Runs are saved in your browser, and you can keep several going at once.
+
 ### Cards
 Every card is a **Pokémon at a position**, for example Delphox QB or Delphox DB. All 1,025 Pokémon can play all 9 positions (QB, RB, WR, TE, OL, DL, LB, DB, K). A card's ratings are simply the Pokémon's own base stats, and each stat means something specific at each position:
 
@@ -81,6 +97,9 @@ Magnitudes live in `SYNERGY_VALUES` in `js/synergy.js` and are balanced by simul
 ```
 index.html            page shell
 css/style.css
+js/adventure/run.js   adventure rules: run state, maps, opponents, rewards, events (no DOM)
+js/adventure/cards.js card percentiles, packs, prices, training upgrades
+js/adventure/ui.js    adventure screens and roster editor
 js/main.js            UI controller (playback, scorebug, panels, replays, player cards)
 js/client.js          page-side game mirror + Web Worker connection
 js/worker.js          Web Worker that runs the engine
@@ -138,6 +157,7 @@ node tools/fatigue-report.mjs 12     # substitutions and energy by position
 node tools/third-downs.mjs 40       # 3rd-down conversion by distance, draws, sneaks
 node tools/returns.mjs 60           # kick/punt return averages, fair catches, TDs
 node tools/injuries.mjs 60          # injury frequency by position
+node tools/adventure-sim.mjs 10     # auto-play whole adventure runs (difficulty tuning)
 node tools/random-rosters.mjs 30     # stress test with random rosters from the whole Pokédex
 node tools/synergy-calibrate.mjs 400 all 2   # win-rate edge of every type synergy at tier II
 ```

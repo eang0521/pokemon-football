@@ -1,12 +1,12 @@
 // Tiny modal helper built on <dialog>.
 let dlg;
-export function openModal(html, onReady) {
+export function openModal(html, onReady, { wide = false } = {}) {
   if (!dlg) {
     dlg = document.createElement('dialog');
-    dlg.className = 'modal';
     document.body.appendChild(dlg);
     dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
   }
+  dlg.className = wide ? 'modal wide' : 'modal';
   dlg.innerHTML = `<div class="modal-body">${html}</div>`;
   dlg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => dlg.close()));
   if (!dlg.open) dlg.showModal();

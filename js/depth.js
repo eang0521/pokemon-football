@@ -19,7 +19,7 @@ export class TeamDepth {
     this.cards = {};
     for (const s of [...STARTERS, ...BENCH]) {
       const c = parseCard(team.roster[s.key], s.key);
-      const card = buildCard(c.mon, c.pos, { id: `${team.id}-${s.key}`, teamId: team.id, slot: s.key });
+      const card = buildCard(c.mon, c.pos, { id: `${team.id}-${s.key}`, teamId: team.id, slot: s.key, bonus: team.bonus?.[s.key] });
       this.cards[s.key] = card;
       registry[card.id] = card;
     }
@@ -54,7 +54,7 @@ export class TeamDepth {
     return cards.map((c) => {
       const types = ov && ov.members.has(c.id) && !c.types.includes(ov.type) ? [...c.types, ov.type] : c.types;
       const { stat, mods } = playerEffects({ types, base: c.base }, syn.active);
-      let r = Object.keys(stat).length ? cardRatings(c.slug, c.pos, stat) : c.ratings;
+      let r = Object.keys(stat).length ? cardRatings(c.slug, c.pos, stat, c.bonus) : c.ratings;
       let m = this.fatigueMult(c);
       if (mods.growth) m *= 1 + mods.growth * Math.min(3, Math.max(0, (ctx.quarter || 1) - 1)) / 3; // Grass: builds each quarter
       if (mods.clutch && ctx.clutch) m *= 1 + mods.clutch;
@@ -115,7 +115,7 @@ export class TeamDepth {
     let rep = free.find((c) => c.pos === need);
     if (!rep && free.length) {
       const src = free.slice().sort((a, b) => this.energy[b.id] - this.energy[a.id])[0];
-      rep = buildCard(src.slug, need, { id: `${src.id}@${need}`, teamId: src.teamId, slot: src.slot, outOfPosition: src.pos });
+      rep = buildCard(src.slug, need, { id: `${src.id}@${need}`, teamId: src.teamId, slot: src.slot, outOfPosition: src.pos, bonus: src.bonus });
       rep.sourceId = src.id;
       registry[rep.id] = rep;
       this.cards[`x${rep.id}`] = rep;

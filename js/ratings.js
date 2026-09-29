@@ -48,7 +48,7 @@ const GENERIC = {
 const OFF_POSITION = 0.85;
 
 // How much each trait matters for the card's overall.
-const OVR_WEIGHTS = {
+export const OVR_WEIGHTS = {
   QB: { acc: 0.3, arm: 0.2, awr: 0.25, spd: 0.1, tgh: 0.08, stm: 0.07 },
   RB: { spd: 0.25, elu: 0.2, str: 0.2, vision: 0.15, tgh: 0.1, stm: 0.1 },
   WR: { spd: 0.3, route: 0.25, hands: 0.25, str: 0.1, tgh: 0.05, stm: 0.05 },
@@ -73,11 +73,21 @@ export function massRating(kg) {
   return clamp(Math.round(20 + Math.log10(Math.max(kg, 0.5)) * 28), 20, 99);
 }
 
+// Base stats plus any flat per-card bonus (adventure training), e.g. { atk: 8 }.
+export function cardBase(slug, bonus = null) {
+  const s = POKEMON[slug].stats;
+  if (!bonus) return s;
+  const out = { ...s };
+  for (const k in bonus) if (k in out) out[k] = Math.min(255, out[k] + bonus[k]);
+  return out;
+}
+
 // statBoost: optional { atk: 0.16, ... } fractions added to base stats (type synergies)
-export function cardRatings(slug, pos, statBoost = null) {
+// bonus: optional flat base-stat bonus on this card
+export function cardRatings(slug, pos, statBoost = null, bonus = null) {
   const p = POKEMON[slug];
   if (!p) throw new Error(`Unknown Pokémon: ${slug}`);
-  let s = p.stats;
+  let s = cardBase(slug, bonus);
   if (statBoost) { s = { ...s }; for (const k in statBoost) s[k] = Math.round(s[k] * (1 + statBoost[k])); }
   const map = STAT_MAP[pos];
   const trained = {};
@@ -99,15 +109,17 @@ export function overall(pos, r) {
   return Math.round(v);
 }
 
-export function cardOverall(slug, pos) { return overall(pos, cardRatings(slug, pos)); }
+export function cardOverall(slug, pos, bonus = null) { return overall(pos, cardRatings(slug, pos, null, bonus)); }
 
 // A card instance on a team
 export function buildCard(slug, pos, extra = {}) {
   const p = POKEMON[slug];
-  const ratings = cardRatings(slug, pos);
+  const bonus = extra.bonus && Object.keys(extra.bonus).length ? extra.bonus : null;
+  const ratings = cardRatings(slug, pos, null, bonus);
+  const base = cardBase(slug, bonus);
   return {
     slug, pos, name: p.name, types: p.types, height: p.height, weight: p.weight, dex: p.dex,
-    sprites: p.sprites, base: p.stats, bst: p.bst, ratings, ovr: overall(pos, ratings), ...extra,
+    sprites: p.sprites, base, bst: Object.values(base).reduce((a, b) => a + b, 0), ratings, ovr: overall(pos, ratings), ...extra, bonus,
   };
 }
 

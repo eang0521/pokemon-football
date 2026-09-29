@@ -20,6 +20,10 @@
         <p class="tag">7-on-7 football simulation</p>
       </div>
     </div>
+    <nav class="modes" aria-label="Game mode">
+      <button type="button" data-mode="exhibition" class="on">Exhibition</button>
+      <button type="button" data-mode="adventure">Adventure</button>
+    </nav>
     <button id="btn-new" class="ghost hidden" type="button">New game</button>
   </header>
 
@@ -93,6 +97,9 @@
       </section>
     </div>
   </main>
+
+  <!-- ============ ADVENTURE ============ -->
+  <main id="adventure" class="adv hidden"><div id="adv-root" class="adv-root"></div></main>
 
   <!-- ============ GAME ============ -->
   <main id="game" class="game hidden">
