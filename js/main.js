@@ -381,6 +381,7 @@ function playReplayItem() {
   ctl.renderer.lastScale = null;
   renderPlaycard(rec);
   hideCaption();
+  if (rec.before) renderScorebug(rec.before, rec); // rewind: clock, score, down & distance at the time
   showReplayBadge(`${R.label}${R.list.length > 1 ? ` ${R.i + 1}/${R.list.length}` : ''}`, rec.text);
   ctl.renderer.draw(rec, 0, ctl.game, { ...drawOpts(0), snapCamera: true });
 }
@@ -392,6 +393,11 @@ function endReplay() {
   Object.assign(ctl, { cur: s.cur, phase: s.phase, phaseT: s.phaseT, preDur: s.preDur, playDur: s.playDur, postDur: s.postDur, evIdx: s.evIdx });
   setPlaying(s.phase === 'final' ? false : s.playing);
   if (ctl.cur) { ctl.renderer.ensureTokens(ctl.cur, ctl.game); ctl.renderer.lastScale = null; }
+  // back to the live situation
+  const live = ctl.phase === 'pre' || ctl.phase === 'play' ? ctl.cur?.before : ctl.phase === 'post' ? ctl.cur?.after : null;
+  renderScorebug(live || ctl.game.snapshot(), ctl.cur);
+  if (ctl.cur) renderPlaycard(ctl.cur);
+  if (ctl.phase === 'final' || (ctl.phase !== 'pre' && ctl.opts.playcard !== 'always')) $('#playcard').classList.add('hidden');
   if (ctl.phase === 'final') $('#final').classList.remove('hidden');
 }
 function showReplayBadge(label, text) {
@@ -414,7 +420,11 @@ function advance(dt) {
   if (ctl.phase === 'play') {
     const evs = ctl.cur.events || [];
     while (ctl.evIdx < evs.length && evs[ctl.evIdx].t + (ctl.cur.motionT || 0) <= ctl.phaseT) { showCaption(evs[ctl.evIdx].text); ctl.evIdx++; }
-    if (ctl.phaseT >= ctl.playDur) { ctl.phase = 'post'; ctl.phaseT = 0; if (!ctl.replay) onPlayEnd(); }
+    if (ctl.phaseT >= ctl.playDur) {
+      ctl.phase = 'post'; ctl.phaseT = 0;
+      if (!ctl.replay) onPlayEnd();
+      else if (ctl.cur.after) renderScorebug(ctl.cur.after, ctl.cur); // the replayed play's result
+    }
   }
   if (ctl.phase === 'post' && ctl.phaseT >= ctl.postDur) {
     if (ctl.replay) {
