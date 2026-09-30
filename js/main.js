@@ -9,7 +9,7 @@ import { openBuilder, wireBuilder, TYPE_COLORS, synergyChips, unitCounts } from 
 import { encodeTeam, decodeTeam } from './teamcode.js';
 import { openModal, closeModal } from './modal.js';
 import { saveCustomTeam } from './storage.js';
-import { initAdventure, showAdventureHome, showAdventure } from './adventure/ui.js';
+import { initAdventure, showAdventureHome, showAdventure, adventureTab } from './adventure/ui.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -71,7 +71,7 @@ function showScreen(name) {
 }
 $$('.modes [data-mode]').forEach((b) => b.addEventListener('click', () => {
   if (ctl.adventure && !$('#game').classList.contains('hidden')) { leaveAdventureGame(); return; }
-  if (b.dataset.mode === 'adventure') { history.replaceState(null, '', `${location.pathname}#adventure`); showAdventure(); }
+  if (b.dataset.mode === 'adventure') { history.replaceState(null, '', `${location.pathname}#adventure`); adventureTab(); }
   else { history.replaceState(null, '', location.pathname); ctl.adventure = null; showScreen('setup'); renderTeamGrid(); }
 }));
 

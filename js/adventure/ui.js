@@ -47,6 +47,12 @@ export function initAdventure(hooks) {
   }, true);
 }
 export function showAdventureHome() { run = null; H.showScreen('adventure'); renderHome(); }
+// Adventure tab: from inside a run, go back to the save list; otherwise open the saves.
+export function adventureTab() {
+  const onAdv = !document.querySelector('#adventure').classList.contains('hidden');
+  if (onAdv && run) { run = null; renderHome(); window.scrollTo(0, 0); return; }
+  showAdventure();
+}
 export function showAdventure() { H.showScreen('adventure'); if (run) render(); else renderHome(); }
 const flash = (text) => { msg = text; };
 
@@ -176,6 +182,7 @@ function render() {
   const tr = A.teamRating(run);
   const hearts = livesText(run);
   const top = `<div class="adv-top" style="--tc:${run.team.colors.primary}">
+    <button type="button" class="ghost adv-back" data-act="home" title="Back to your saved adventures (this run is saved)">← All adventures</button>
     <div class="adv-team"><span class="chip" style="background:${run.team.colors.primary};border-color:${run.team.colors.secondary}"></span><b>${esc(run.team.city)} ${esc(run.team.name)}</b></div>
     <div class="adv-stats">
       <span title="Act">Act <b>${A.isEndless(run) ? run.act : Math.min(run.act, A.ACTS)}</b>${A.isEndless(run) ? ' <span class="muted">(endless)</span>' : `/${A.ACTS}`}</span>
@@ -184,7 +191,7 @@ function render() {
       <span title="Average overall of your 15 starters (and their average percentile)">Team <b>${tr.ovr}</b> OVR <span class="muted">(${ord(tr.pct)})</span></span>
       <span title="Win-loss record">${run.stats.w}-${run.stats.l}${run.stats.t ? `-${run.stats.t}` : ''}</span>
     </div>
-    <div class="adv-btns"><button type="button" data-act="roster">Roster</button><button type="button" data-act="coach" title="Coaching tendencies: pass rate, blitzing, coverage, tempo…">Coach</button><button type="button" data-act="log">Log</button>${run.status === 'active' && !A.hasLives(run) ? '<button type="button" class="ghost" data-act="retire" title="End this run and see the summary">Retire</button>' : ''}<button type="button" class="ghost" data-act="home">Saves</button></div>
+    <div class="adv-btns"><button type="button" data-act="roster">Roster</button><button type="button" data-act="coach" title="Coaching tendencies: pass rate, blitzing, coverage, tempo…">Coach</button><button type="button" data-act="log">Log</button>${run.status === 'active' && !A.hasLives(run) ? '<button type="button" class="ghost" data-act="retire" title="End this run and see the summary">Retire</button>' : ''}</div>
   </div>`;
   let body;
   if (run.status !== 'active' && !(run.node && run.node.stage === 'result')) body = summaryHTML();

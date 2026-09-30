@@ -521,3 +521,4 @@ button.big { font-size: 16px; padding: 10px 20px; }
 .as-row.key i b { background: var(--accent); }
 .as-row em { font-style: normal; text-align: right; color: var(--text); }
 .as-row em small { color: var(--good); margin-left: 2px; }
+.adv-back { padding: 5px 10px; font-weight: 600; }
