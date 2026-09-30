@@ -78,6 +78,7 @@ const slotName = (s) => (s.unit === 'B' ? `backup ${s.label}` : s.label === 'FLE
 function impactHTML(p) {
   if (!p) return '';
   if (p.role === 'starter') {
+    if (p.delta == null) return `<div class="ac-imp up">▲ Starts at ${esc(slotName(p.slot))}${p.dropped ? ` over ${esc(mon(p.dropped).name)}` : ''}</div>`;
     const d = p.delta >= 0.05 ? `+${p.delta.toFixed(1)} team OVR` : 'Starter';
     return `<div class="ac-imp up">▲ ${d} · starts at ${esc(slotName(p.slot))}${p.dropped ? ` over ${esc(mon(p.dropped).name)}` : ''}${p.syn.length ? ` · <b>${esc(p.syn.join(', '))}</b>` : ''}</div>`;
   }
@@ -302,7 +303,17 @@ function resultHTML(n) {
 function packHTML(n) {
   if (!n.taken) return `<div class="pack-closed"><div class="pack-art">🎁</div><p>A pack of 5 cards. Rarer cards are stronger at their position.</p>
     <div class="adv-actions"><button type="button" class="primary big" data-act="openpack">Open pack</button></div></div>`;
-  return `<div class="acard-grid reveal">${n.pack.map((c) => cardTile(c, { extra: `<span class="ac-rar">${rarityOf(pctOfCard(c)).name}</span>` })).join('')}</div>
+  const im = n.impact;
+  const role = (i) => {
+    const r = im?.roles[i];
+    if (!r) return '';
+    const slot = ALL_SLOTS.find((s) => s.key === r.slot);
+    return impactHTML({ ...r, slot, delta: null, dropped: r.over ? A.cardByUid(run, r.over) : null });
+  };
+  const summary = im ? (im.delta >= 0.05
+    ? `<div class="adv-msg">This pack improves your best lineup by <b>+${im.delta.toFixed(1)} team OVR</b>${im.syn.length ? ` and switches on <b>${esc(im.syn.join(', '))}</b>` : ''}.${run.autoManage === false ? ' Auto-manage is off, so use <b>Best lineup now</b> in the roster to apply it.' : ''}</div>`
+    : `<div class="adv-msg">None of these cards would improve your best lineup${im.roles.some((r) => r.role === 'bench') ? ', but some add depth on the bench' : ''}.</div>`) : '';
+  return `${summary}<div class="acard-grid reveal">${n.pack.map((c, i) => cardTile(c, { extra: `${role(i)}<span class="ac-rar">${rarityOf(pctOfCard(c)).name}</span>` })).join('')}</div>
     <p class="muted small">All 5 cards were added to your collection.${run.autoManage !== false ? ' Your lineup was updated with any upgrades.' : ''}</p>${cont()}`;
 }
 
@@ -507,7 +518,7 @@ function onClick(e) {
     case 'buy': if (!A.buyCard(run, Number(b.dataset.i))) flash('Not enough coins.'); break;
     case 'item': {
       const got = A.buyItem(run, b.dataset.k);
-      if (Array.isArray(got)) flash(`Pack: ${got.map(nm).join(', ')}`);
+      if (Array.isArray(got)) flash(`Pack: ${got.map(nm).join(', ')}. ${got.delta >= 0.05 ? `Your best lineup improves by +${got.delta.toFixed(1)} team OVR.` : 'No upgrades to your best lineup.'}`);
       break;
     }
     case 'sell': {

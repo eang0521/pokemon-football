@@ -162,6 +162,13 @@ function benchFill(ranked, starters) {
   return out;
 }
 
+// The best lineup for the current collection (starters + bench), its average OVR and synergy tiers.
+export function bestPlan(run) {
+  const ranked = rankHealthy(run.cards);
+  const st = bestStarters(run, ranked);
+  return { st, bench: benchFill(ranked, st), avg: starterAvg(run.cards, st), tiers: unitTiers(run.cards, st) };
+}
+
 // What adding each candidate card ({mon, pos, bonus?}) would do to your best lineup:
 // { role: 'starter'|'bench'|'none', slot, delta (team OVR), dropped (card leaving the starters), syn: ['Fire II', ...] }
 export function previewAdditions(run, cands) {
@@ -533,7 +540,27 @@ export function takePack(run) {
   const node = run.node;
   if (!node?.pack || node.taken) return [];
   node.taken = true;
+  const before = bestPlan(run);
   const got = node.pack.map((c) => addCard(run, c));
+  // how the pack changes the best lineup, and where each new card fits in it
+  const after = bestPlan(run);
+  const kept = new Set(Object.values(after.st));
+  const dropped = Object.entries(before.st).filter(([, u]) => !kept.has(u));
+  const syn = [];
+  after.tiers.forEach((u, i) => { for (const t in u) if (u[t] > (before.tiers[i][t] || 0)) syn.push(`${SYNERGIES[t].name} ${tierName(u[t])}`); });
+  node.impact = {
+    delta: after.avg - before.avg, syn,
+    roles: got.map((card) => {
+      const s = STARTERS.find((x) => after.st[x.key] === card.uid);
+      if (s) {
+        let d = dropped.find(([k]) => k === s.key) || dropped.find(([, u]) => s.pos.includes(cardByUid(run, u)?.pos));
+        if (d) dropped.splice(dropped.indexOf(d), 1);
+        return { role: 'starter', slot: s.key, over: d ? d[1] : null };
+      }
+      const b = BENCH.find((x) => after.bench[x.key] === card.uid);
+      return b ? { role: 'bench', slot: b.key } : { role: 'none' };
+    }),
+  };
   refreshLineup(run);
   logEvent(run, `Opened a pack: ${node.pack.map((c) => `${POKEMON[c.mon].name} ${c.pos}`).join(', ')}.`);
   return got;
@@ -577,8 +604,10 @@ export function buyItem(run, key) {
   run.coins -= item.price; item.sold = true;
   let got = null;
   if (key === 'pack') {
+    const before = bestPlan(run).avg;
     got = openPack(rngFor(run, 'shoppack', run.act, run.node.row), s.packCenter, 5, new Set()).map((c) => addCard(run, c));
     logEvent(run, `Bought a pack: ${got.map((c) => `${POKEMON[c.mon].name} ${c.pos}`).join(', ')}.`);
+    got.delta = bestPlan(run).avg - before;
   } else if (key === 'heal') { healAll(run); logEvent(run, 'Paid the physio: everyone is healthy.'); }
   else if (key === 'life') { run.lives++; logEvent(run, 'Bought a second wind (+1 life).'); }
   refreshLineup(run);

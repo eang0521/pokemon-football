@@ -424,7 +424,7 @@ button.big { font-size: 16px; padding: 10px 20px; }
 .acard.picked { opacity: .5; }
 .acard .ac-plus { position: absolute; left: 4px; top: 2px; color: var(--good); font-size: 11px; }
 .acard .ac-inj { position: absolute; right: 6px; top: 3px; font-size: 10.5px; color: var(--bad); font-weight: 800; }
-.acard .ac-rar { position: absolute; right: 6px; bottom: 3px; font-size: 9.5px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+.acard .ac-rar { position: absolute; right: 6px; top: 3px; font-size: 9.5px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
 .acard .ac-tag { grid-column: 1 / -1; font-size: 11px; font-weight: 700; color: var(--muted); }
 .acard .ac-btn { grid-column: 1 / -1; padding: 5px 8px; }
 .acard-grid.reveal .acard { animation: flip .5s ease-out both; }
