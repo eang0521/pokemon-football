@@ -354,14 +354,24 @@ function playersOfGame(g) {
 const abbrOf = (g, p) => g.teams.find((t) => t.id === p.teamId)?.abbr || '';
 
 // ---------------- replays & highlights
+// Highlight reel: every score (not extra points / 2-pt tries), every turnover and blocked kick,
+// big gains (20+ yds), big returns (30+ yds) and big sacks. Capped at 30 by dropping the
+// smallest big plays; always in game order.
+const HIGHLIGHT_CAP = 30;
 function highlightIds() {
-  const ids = [];
+  const items = [];
   for (const [id, r] of ctl.history) {
-    const big = ['td', 'int', 'fumble', 'safety'].includes(r.highlight) || (r.type === 'fg' && r.highlight === 'fg' && /(4\d|5\d|6\d)-yard/.test(r.text || '')) ||
-      (r.gain ?? 0) >= 20 || / sacked by /.test(r.text || '') && (r.gain ?? 0) <= -7;
-    if (big && r.type !== 'pat') ids.push(id);
+    if (r.type === 'pat' || r.type === 'kneel' || r.type === 'spike') continue;
+    const t = r.text || '', gain = r.gain ?? 0, ret = r.retYds ?? 0;
+    let pri = 0, size = 0;
+    if (['td', 'safety', 'fg'].includes(r.highlight)) pri = 3; // scores
+    else if (['int', 'fumble', 'downs'].includes(r.highlight) || /BLOCKED/.test(t)) pri = 3; // turnovers, blocks
+    else if (gain >= 20 || ret >= 30) { pri = 2; size = Math.max(gain, ret - 10); } // big plays
+    else if (/ sacked by /.test(t) && gain <= -8) { pri = 1; size = -gain; } // big sacks
+    if (pri) items.push({ id, pri, size, order: items.length });
   }
-  return ids.slice(0, 18);
+  const keep = items.slice().sort((a, b) => b.pri - a.pri || b.size - a.size).slice(0, HIGHLIGHT_CAP);
+  return keep.sort((a, b) => a.order - b.order).map((x) => x.id);
 }
 function startReplay(ids, label = 'Replay') {
   const list = ids.map((id) => ctl.history.get(id)).filter(Boolean);

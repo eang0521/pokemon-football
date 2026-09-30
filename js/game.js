@@ -844,6 +844,7 @@ export class Game {
     const end = Math.round(res.endX);
     let text;
     const rec = { type: 'kickoff', frames: res.frames, cast: res.cast, duration: res.duration, frameTeam: r, dir: this.dirFor(r), W: FIELD_W, losX: null, fdX: null, design: null, events: res.events, presnap, tacklers: res.tacklers, carrierId: res.tacklers.length ? retr.id : null };
+    rec.retYds = res.td ? 100 - start : Math.max(0, end - start); // for the highlight reel
     this.runPlayClock(Math.max(1, res.duration - (res.catchT ?? hang)));
     if (res.fumble && res.recoveredBy === 'kicking') {
       text = `${K.name} kicks off... ${retr.name} FUMBLES the return! ${this.teams[k].name} recover at the ${this.yardText(100 - end, k)}!`;
@@ -914,6 +915,7 @@ export class Game {
     this.runPlayClock(Math.min(res.duration, 12));
     const rec = { type: 'punt', frames: res.frames, cast: res.cast, duration: res.duration, frameTeam: d, dir: this.dirFor(d), W: FIELD_W, losX: null, fdX: null, design: null, events: res.events, presnap, tacklers: res.tacklers, carrierId: res.tacklers.length ? retr.id : null };
     const start = Math.round(res.catchX), end = Math.round(res.endX);
+    rec.retYds = res.fairCatch ? 0 : res.td ? 100 - start : Math.max(0, end - start); // for the highlight reel
     let text;
     if (res.fairCatch) {
       text = `${K.name} punts ${py} yards. Fair catch by ${retr.name} at the ${this.yardText(start, d)}.`;

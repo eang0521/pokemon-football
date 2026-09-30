@@ -511,3 +511,13 @@ button.big { font-size: 16px; padding: 10px 20px; }
 .lm b { color: var(--accent); font-family: var(--display); font-size: 15px; }
 .adv-opts { display: grid; gap: 6px; margin: 4px 0 8px; }
 .adv-opts label { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+/* adventure: stat bars on cards (roster editor "Show stats") */
+.acard .ac-stats { grid-column: 1 / -1; display: grid; gap: 2px; margin-top: 2px; }
+.as-row { display: grid; grid-template-columns: 92px 1fr 44px; gap: 6px; align-items: center; font-size: 10.5px; color: var(--muted); }
+.as-row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.as-row i { height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.as-row i b { display: block; height: 100%; background: #5b7a99; }
+.as-row.key { color: var(--text); }
+.as-row.key i b { background: var(--accent); }
+.as-row em { font-style: normal; text-align: right; color: var(--text); }
+.as-row em small { color: var(--good); margin-left: 2px; }

@@ -51,7 +51,13 @@ export function showAdventure() { H.showScreen('adventure'); if (run) render(); 
 const flash = (text) => { msg = text; };
 
 // ---------------------------------------------------------------- card tiles
-function cardTile(c, { extra = '', cls = '', note = '' } = {}) {
+// stats: show the six stats as bars, labeled with what they mean at the card's position
+// (the two that matter most there are highlighted; +n marks training bonuses).
+function statBars(c, base) {
+  const key = new Set(keyStats(c.pos).slice(0, 2));
+  return `<div class="ac-stats">${STAT_KEYS.map((k) => `<div class="as-row${key.has(k) ? ' key' : ''}"><span>${esc(STAT_LABELS[c.pos][k])}</span><i><b style="width:${Math.min(100, base[k] / 1.6)}%"></b></i><em>${base[k]}${c.bonus?.[k] ? `<small>+${c.bonus[k]}</small>` : ''}</em></div>`).join('')}</div>`;
+}
+function cardTile(c, { extra = '', cls = '', note = '', stats = false } = {}) {
   const p = mon(c), ovr = ovrOf(c), pct = pctOfCard(c), rar = rarityOf(pct);
   const trained = c.bonus && Object.keys(c.bonus).length;
   const base = { ...p.stats };
@@ -63,6 +69,7 @@ function cardTile(c, { extra = '', cls = '', note = '' } = {}) {
     <div class="ac-ovr">${ovr}<small>${ord(pct)}</small></div>
     ${trained ? '<span class="ac-plus" title="Trained">▲</span>' : ''}
     ${c.inj > 0 ? `<span class="ac-inj" title="Injured: misses ${c.inj} more battle${c.inj > 1 ? 's' : ''}">✚ ${c.inj}</span>` : ''}
+    ${stats ? statBars(c, base) : ''}
     ${extra}
   </div>`;
 }
@@ -411,6 +418,7 @@ function summaryHTML() {
 
 // ---------------------------------------------------------------- roster editor
 let rosterSel = null;
+let rosterStats = (() => { try { return localStorage.getItem('pgf:advStats') === '1'; } catch { return false; } })();
 function openRoster() {
   rosterSel = null;
   openModal(`<div id="rst-head"></div>
@@ -429,7 +437,7 @@ function renderRoster(d = document.querySelector('dialog.modal')) {
     const c = A.cardByUid(run, run.lineup[s.key]);
     const label = s.unit === 'B' ? `Backup ${s.label}` : s.label === 'FLEX' ? `FLEX ${s.pos.join('/')}` : s.label;
     return `<button type="button" class="rslot${rosterSel === s.key ? ' sel' : ''}${c ? '' : ' empty'}" data-rs="${s.key}">
-      <span class="rs-l">${esc(label)}</span>${c ? cardTile(c) : '<span class="muted small">Empty: a walk-on will play</span>'}</button>`;
+      <span class="rs-l">${esc(label)}</span>${c ? cardTile(c, { stats: rosterStats }) : '<span class="muted small">Empty: a walk-on will play</span>'}</button>`;
   };
   const group = (title, list) => `<div class="b-gtitle">${title}</div><div class="rgrid">${list.map(slotBtn).join('')}</div>`;
   let chooser = '';
@@ -439,6 +447,7 @@ function renderRoster(d = document.querySelector('dialog.modal')) {
     const cands = run.cards.filter((c) => s.pos.includes(c.pos)).sort((a, b) => (a.inj > 0) - (b.inj > 0) || ovrOf(b) - ovrOf(a));
     chooser = `<div class="rchooser"><div class="b-gtitle">Choose for ${esc(s.unit === 'B' ? `backup ${s.label}` : s.label === 'FLEX' ? `FLEX (${s.pos.join('/')})` : s.label)}</div>
       ${cands.length ? `<div class="acard-grid">${cands.map((c) => cardTile(c, {
+        stats: rosterStats,
         note: where[c.uid] ? (where[c.uid] === rosterSel ? 'current' : `in ${ALL_SLOTS.find((x) => x.key === where[c.uid]).label}`) : 'reserve',
         extra: c.inj > 0 || where[c.uid] === rosterSel ? '' : `<button type="button" class="ac-btn" data-pick="${c.uid}">Use</button>`,
       })).join('')}</div>` : '<p class="muted small">No cards for this slot. Find some in packs, shops, and drafts.</p>'}</div>`;
@@ -449,17 +458,19 @@ function renderRoster(d = document.querySelector('dialog.modal')) {
   const gt = A.gameTeam(run).roster, uo = unitCounts(gt, 'O'), ud = unitCounts(gt, 'D');
   head.innerHTML = `<div class="rhead"><h3>Roster</h3><span>Team <b>${tr.ovr}</b> OVR (${ord(tr.pct)})</span>
       <label class="small"><input type="checkbox" id="r-auto" ${run.autoManage !== false ? 'checked' : ''}> Auto-manage lineup</label>
+      <label class="small"><input type="checkbox" id="r-stats" ${rosterStats ? 'checked' : ''}> Show stats</label>
       <button type="button" data-ra="best">Best lineup now</button><button type="button" class="primary" data-close>Done</button></div>
     <div class="unit-row mine"><span class="unit-lab">OFF</span>${synergyChips(uo.counts, uo.active, { compact: true, onlyActive: true }) || '<span class="muted small">no synergies</span>'}
       <span class="unit-lab">DEF</span>${synergyChips(ud.counts, ud.active, { compact: true, onlyActive: true }) || '<span class="muted small">no synergies</span>'}</div>
     <p class="muted small">Click a slot to change who plays there. With auto-manage on, your best healthy cards are placed automatically whenever your roster changes (when two lineups are about as strong, the one with more type synergies wins); editing a slot turns it off.</p>`;
+  $('#r-stats', head).onchange = (e) => { rosterStats = e.target.checked; try { localStorage.setItem('pgf:advStats', rosterStats ? '1' : '0'); } catch { /* ignore */ } renderRoster(); };
   $('#r-auto', head).onchange = (e) => { run.autoManage = e.target.checked; if (run.autoManage) A.autoLineup(run); save(); renderRoster(); render(); };
   el.innerHTML = `${chooser}
     ${group('Offense', STARTERS.filter((s) => s.unit === 'O'))}
     ${group('Defense & kicker', STARTERS.filter((s) => s.unit !== 'O'))}
     ${group('Bench', BENCH)}
     <div class="b-gtitle">Reserve (${reserve.length})</div>
-    ${reserve.length ? `<div class="acard-grid">${reserve.map((c) => cardTile(c)).join('')}</div>` : '<p class="muted small">Every card is in the lineup.</p>'}`;
+    ${reserve.length ? `<div class="acard-grid">${reserve.map((c) => cardTile(c, { stats: rosterStats })).join('')}</div>` : '<p class="muted small">Every card is in the lineup.</p>'}`;
 }
 function onRosterClick(e) {
   const b = e.target.closest('button');
