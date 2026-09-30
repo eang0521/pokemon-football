@@ -98,15 +98,19 @@ function lineupPanel(n) {
 }
 const rosterCards = (roster) => ALL_SLOTS.map((s) => { const [m, p] = String(roster[s.key]).split(':'); return { slot: s, c: { mon: m, pos: p || s.pos[0] } }; });
 
+const livesText = (r) => (A.hasLives(r) ? `${'♥'.repeat(Math.max(0, r.lives))}${'♡'.repeat(Math.max(0, r.maxLives - r.lives))}` : '♥ ∞');
+
 // ---------------------------------------------------------------- home
 function renderHome() {
   const runs = loadRuns();
-  const status = (r) => r.status === 'won' ? '<span class="adv-st won">🏆 Champions</span>' : r.status === 'lost' ? '<span class="adv-st lost">Eliminated</span>'
-    : `<span class="adv-st">Act ${r.act} · ${'♥'.repeat(r.lives)}${'♡'.repeat(Math.max(0, r.maxLives - r.lives))} · ${r.coins} coins</span>`;
+  const tags = (r) => `${r.options?.endless ? ' · Endless' : ''}${r.options?.noLives ? ' · No lives' : ''}`;
+  const status = (r) => r.status === 'won' ? '<span class="adv-st won">🏆 Champions</span>' : r.status === 'lost' ? `<span class="adv-st lost">Eliminated in act ${r.act}${tags(r)}</span>`
+    : r.status === 'retired' ? `<span class="adv-st">Retired in act ${r.act}${tags(r)}</span>`
+    : `<span class="adv-st">Act ${r.act} · ${livesText(r)} · ${r.coins} coins${tags(r)}</span>`;
   root().innerHTML = `<section class="adv-home">
     <div class="adv-intro">
       <h2>Adventure</h2>
-      <p>Start with a scrappy team of weak cards and fight your way through three acts. Choose your route: battle random teams, take on elite teams for bigger rewards, open packs, shop, train, rest, and handle surprises. Opponents get better as you go. Each act ends with a boss, and you have 3 lives.</p>
+      <p>Start with a scrappy team of weak cards and fight your way through three acts. Choose your route: battle random teams, take on elite teams for bigger rewards, open packs, shop, train, rest, and handle surprises. Opponents get better as you go. Each act ends with a boss, and you have 3 lives. Want more? Turn on <b>Endless</b> (the acts never stop) or <b>No lives</b> (losses never end your run).</p>
       <button type="button" class="primary" data-act="new">＋ New adventure</button>
     </div>
     <h3 class="adv-h">Saved adventures</h3>
@@ -135,6 +139,10 @@ function newDialog() {
       <label>Primary <input id="n-c1" type="color" value="#2e7d32"></label>
       <label>Secondary <input id="n-c2" type="color" value="#ffcb05"></label>
     </div>
+    <div class="adv-opts">
+      <label><input type="checkbox" id="n-endless"> <b>Endless</b> <span class="muted small">No final act: after the Champion, Legend tiers keep getting tougher</span></label>
+      <label><input type="checkbox" id="n-nolives"> <b>No lives</b> <span class="muted small">Losses never end the run (you still have to beat each boss to move on)</span></label>
+    </div>
     <details class="b-coach" open><summary>Coach tendencies</summary><div id="n-coach"></div></details>
     <p class="muted small">You can change these any time during the adventure with the <b>Coach</b> button.</p>
     <div class="modal-actions"><button type="button" class="primary" id="n-go">Start adventure</button><button type="button" class="ghost" data-close>Cancel</button></div>`, (d) => {
@@ -146,7 +154,7 @@ function newDialog() {
         colors: { primary: v('#n-c1'), secondary: v('#n-c2') },
         coach,
       };
-      run = A.newRun({ team });
+      run = A.newRun({ team, options: { endless: $('#n-endless', d).checked, noLives: $('#n-nolives', d).checked } });
       save();
       closeModal();
       flash('Your starting roster is ready. Pick your first stop on the map.');
@@ -159,17 +167,17 @@ function newDialog() {
 function render() {
   if (!run) return renderHome();
   const tr = A.teamRating(run);
-  const hearts = `${'♥'.repeat(Math.max(0, run.lives))}${'♡'.repeat(Math.max(0, run.maxLives - run.lives))}`;
+  const hearts = livesText(run);
   const top = `<div class="adv-top" style="--tc:${run.team.colors.primary}">
     <div class="adv-team"><span class="chip" style="background:${run.team.colors.primary};border-color:${run.team.colors.secondary}"></span><b>${esc(run.team.city)} ${esc(run.team.name)}</b></div>
     <div class="adv-stats">
-      <span title="Act">Act <b>${Math.min(run.act, A.ACTS)}</b>/${A.ACTS}</span>
+      <span title="Act">Act <b>${A.isEndless(run) ? run.act : Math.min(run.act, A.ACTS)}</b>${A.isEndless(run) ? ' <span class="muted">(endless)</span>' : `/${A.ACTS}`}</span>
       <span class="hearts" title="Lives">${hearts}</span>
       <span title="Coins">🪙 <b>${run.coins}</b></span>
       <span title="Average overall of your 15 starters (and their average percentile)">Team <b>${tr.ovr}</b> OVR <span class="muted">(${ord(tr.pct)})</span></span>
       <span title="Win-loss record">${run.stats.w}-${run.stats.l}${run.stats.t ? `-${run.stats.t}` : ''}</span>
     </div>
-    <div class="adv-btns"><button type="button" data-act="roster">Roster</button><button type="button" data-act="coach" title="Coaching tendencies: pass rate, blitzing, coverage, tempo…">Coach</button><button type="button" data-act="log">Log</button><button type="button" class="ghost" data-act="home">Saves</button></div>
+    <div class="adv-btns"><button type="button" data-act="roster">Roster</button><button type="button" data-act="coach" title="Coaching tendencies: pass rate, blitzing, coverage, tempo…">Coach</button><button type="button" data-act="log">Log</button>${run.status === 'active' && !A.hasLives(run) ? '<button type="button" class="ghost" data-act="retire" title="End this run and see the summary">Retire</button>' : ''}<button type="button" class="ghost" data-act="home">Saves</button></div>
   </div>`;
   let body;
   if (run.status !== 'active' && !(run.node && run.node.stage === 'result')) body = summaryHTML();
@@ -204,7 +212,7 @@ function mapHTML() {
       title="${esc(info.name)}: ${esc(info.desc)}" aria-label="${esc(info.name)}">${info.icon}</button>`;
   };
   const nodes = [...m.rows.flat().map(node), node(m.boss)];
-  const bossName = A.BOSS_TITLES[run.act - 1];
+  const bossName = A.bossTitle(run.act);
   return `<div class="adv-mapwrap">
     <div class="adv-maphead"><h3>Act ${run.act}: road to the ${esc(bossName)}</h3>
       <p class="muted small">${avail.size ? 'Choose a highlighted stop. You can only move forward along the lines.' : ''}</p></div>
@@ -221,7 +229,7 @@ function mapHTML() {
 function nodeHTML() {
   const n = run.node;
   const info = A.NODE_INFO[n.type];
-  const head = `<div class="adv-nodehead"><span class="nicon">${info.icon}</span><div><h3>${esc(n.type === 'boss' ? `${A.BOSS_TITLES[run.act - 1]} battle` : info.name)}</h3><div class="muted small">Act ${run.act} · stop ${n.row === A.ROWS ? 'boss' : n.row + 1}</div></div></div>`;
+  const head = `<div class="adv-nodehead"><span class="nicon">${info.icon}</span><div><h3>${esc(n.type === 'boss' ? `${A.bossTitle(run.act)} battle` : info.name)}</h3><div class="muted small">Act ${run.act} · stop ${n.row === A.ROWS ? 'boss' : n.row + 1}</div></div></div>`;
   const fn = { battle: battleHTML, elite: battleHTML, boss: battleHTML, pack: packHTML, shop: shopHTML, training: trainingHTML, rest: restHTML, event: eventHTML }[n.type];
   return `<div class="adv-node">${head}${fn(n)}</div>`;
 }
@@ -239,7 +247,7 @@ function battleHTML(n) {
   if (n.stage === 'result') return resultHTML(n);
   const o = n.opponent, orat = A.opponentRating(o), mine = A.teamRating(run);
   const [vtext, vcls] = verdict(mine.pct - orat.pct);
-  const kind = n.type === 'boss' ? `${A.BOSS_TITLES[run.act - 1]}` : n.type === 'elite' ? 'Elite team' : 'Opponent';
+  const kind = n.type === 'boss' ? `${A.bossTitle(run.act)}` : n.type === 'elite' ? 'Elite team' : 'Opponent';
   const oc = rosterCards(o.roster);
   const starters = oc.filter((x) => x.slot.unit !== 'B');
   const uo = unitCounts(o.roster, 'O'), ud = unitCounts(o.roster, 'D');
@@ -293,7 +301,7 @@ function resultHTML(n) {
         cls: taken.includes(i) ? 'picked' : '',
         extra: taken.includes(i) ? '<span class="ac-tag">Drafted</span>' : left > 0 ? `${impactHTML(imp[i])}<button type="button" class="ac-btn" data-act="draft" data-i="${i}">Draft</button>` : '',
       })).join('')}</div>` : '';
-    after = `${draft}${cont(left > 0 && r.draft.length ? 'Skip draft ▶' : n.type === 'boss' ? (run.act >= A.ACTS ? 'Claim the title ▶' : `On to act ${run.act + 1} ▶`) : 'Back to the map ▶')}`;
+    after = `${draft}${cont(left > 0 && r.draft.length ? 'Skip draft ▶' : n.type === 'boss' ? (run.act >= A.ACTS && !A.isEndless(run) ? 'Claim the title ▶' : `On to act ${run.act + 1} ▶`) : 'Back to the map ▶')}`;
   }
   return `<div class="adv-result ${r.win ? 'win' : r.tie ? 'tie' : 'loss'}">
     <h2>${title}</h2><div class="fscore">${esc(run.team.abbr)} ${r.pf} — ${r.pa} ${esc(o.abbr)}</div>
@@ -373,7 +381,7 @@ function restHTML(n) {
   return `<p>Your team makes camp. Choose one:</p>
     <div class="rest-opts">
       <button type="button" data-act="rest" data-k="heal" ${hurt.length ? '' : 'disabled'}><b>✚ Heal</b><span>Treat every injury${hurt.length ? ` (${hurt.map(nm).map(esc).join(', ')})` : ' (nobody is hurt)'}</span></button>
-      <button type="button" data-act="rest" data-k="life" ${run.lives < run.maxLives ? '' : 'disabled'}><b>❤️ Recover</b><span>${run.lives < run.maxLives ? 'Get back a life' : 'Lives are full'}</span></button>
+      ${A.hasLives(run) ? `<button type="button" data-act="rest" data-k="life" ${run.lives < run.maxLives ? '' : 'disabled'}><b>❤️ Recover</b><span>${run.lives < run.maxLives ? 'Get back a life' : 'Lives are full'}</span></button>` : ''}
       <button type="button" data-act="rest" data-k="coins"><b>🪙 Work a camp</b><span>Run a youth clinic for 25 coins</span></button>
     </div>`;
 }
@@ -391,11 +399,11 @@ function eventHTML(n) {
 }
 
 function summaryHTML() {
-  const won = run.status === 'won';
+  const won = run.status === 'won', retired = run.status === 'retired';
   const best = run.cards.slice().sort((a, b) => ovrOf(b) - ovrOf(a)).slice(0, 6);
-  return `<div class="adv-result ${won ? 'win' : 'loss'}"><h2>${won ? '🏆 Champions!' : 'Adventure over'}</h2>
+  return `<div class="adv-result ${won ? 'win' : 'loss'}"><h2>${won ? '🏆 Champions!' : retired ? 'Retired' : 'Adventure over'}</h2>
     <div class="fscore">${run.stats.w}-${run.stats.l}${run.stats.t ? `-${run.stats.t}` : ''} · ${run.stats.pf} pts for, ${run.stats.pa} against</div>
-    <p>${won ? 'You beat all three bosses.' : `Eliminated in act ${run.act} after ${run.path.length} stops.`}</p></div>
+    <p>${won ? 'You beat all three bosses.' : retired ? `You hung it up in act ${run.act} after ${run.path.length} stops${A.isEndless(run) ? ` (bosses beaten: ${run.path.filter((p) => p.type === 'boss').length})` : ''}.` : `Eliminated in act ${run.act} after ${run.path.length} stops${A.isEndless(run) ? ` (bosses beaten: ${run.path.filter((p) => p.type === 'boss').length})` : ''}.`}</p></div>
     <div class="b-gtitle">Your best cards</div><div class="acard-grid">${best.map((c) => cardTile(c)).join('')}</div>
     <div class="b-gtitle">Story of the run</div><ol class="adv-log">${run.log.map((l) => `<li><span class="muted">Act ${l.act}</span> ${esc(l.text)}</li>`).join('')}</ol>
     <div class="adv-actions"><button type="button" class="primary" data-act="new">New adventure</button><button type="button" data-act="home">All saves</button></div>`;
@@ -508,6 +516,7 @@ function onClick(e) {
     case 'home': run = null; renderHome(); return;
     case 'roster': openRoster(); return;
     case 'log': openLog(); return;
+    case 'retire': if (!confirm('Retire this run? It ends here, and you can view the summary any time from Saves.')) return; A.retire(run); break;
     case 'coach': openCoach(); return;
     case 'enter': A.enterNode(run, Number(b.dataset.r), Number(b.dataset.c)); break;
     case 'play': playBattle(); return;

@@ -27,6 +27,11 @@ export const NODE_INFO = {
   event: { name: 'Event', icon: '❓', desc: 'Something unexpected' },
 };
 export const BOSS_TITLES = ['Gym Leader', 'Elite Four', 'Champion'];
+// Endless mode keeps going after the Champion: Legend tiers.
+export const bossTitle = (act) => (act <= BOSS_TITLES.length ? BOSS_TITLES[act - 1] : `Legend ${act - BOSS_TITLES.length}`);
+// Run options: endless (no final act) and noLives (losses never end the run).
+export const isEndless = (run) => !!run.options?.endless;
+export const hasLives = (run) => !run.options?.noLives;
 
 // ---------------------------------------------------------------- seeds
 function hash(...parts) {
@@ -40,10 +45,12 @@ const rngFor = (run, ...parts) => new RNG(hash(run.seed, ...parts));
 // Run progress 0..1 at a row of an act (boss row = ROWS).
 export const progress = (act, row) => ((act - 1) * (ROWS + 1) + row) / (ACTS * (ROWS + 1));
 // Typical opponent card percentile for a stop.
+// Past act 3 (endless mode) it keeps rising but levels off toward the top of the card pool.
 export function strength(act, row, type) {
-  let c = 4 + 56 * Math.pow(progress(act, row), 1.3);
+  const p = progress(act, row);
+  let c = p <= 1 ? 4 + 56 * Math.pow(p, 1.3) : 60 + 32 * (1 - Math.exp(-(p - 1) * 1.2));
   if (type === 'elite') c += 7;
-  if (type === 'boss') c += [2, 5, 8][act - 1];
+  if (type === 'boss') c += [2, 5, 8][Math.min(act, 3) - 1];
   return clamp(c, 5, 97);
 }
 const bandWidth = (type) => (type === 'battle' ? 8 : 6);
@@ -283,10 +290,10 @@ export function gameTeam(run) {
 }
 
 // ---------------------------------------------------------------- run
-export function newRun({ team, seed = Math.floor(Math.random() * 1e9) }) {
+export function newRun({ team, seed = Math.floor(Math.random() * 1e9), options = {} }) {
   const run = {
     v: 1, id: `adv${seed.toString(36)}${Date.now().toString(36)}`, created: Date.now(), updated: Date.now(), seed,
-    status: 'active', team, autoManage: true, lives: START_LIVES, maxLives: START_LIVES, coins: 60,
+    status: 'active', team, options: { endless: !!options.endless, noLives: !!options.noLives }, autoManage: true, lives: START_LIVES, maxLives: START_LIVES, coins: 60,
     act: 1, maps: {}, pos: null, path: [], cards: [], nextUid: 1, lineup: {}, node: null, log: [],
     stats: { w: 0, l: 0, t: 0, pf: 0, pa: 0 },
   };
@@ -390,11 +397,11 @@ export function completeNode(run) {
   run.pos = { row: node.row, col: node.col };
   run.node = null;
   if (node.type === 'boss') {
-    if (run.act >= ACTS) { run.status = 'won'; logEvent(run, 'Champions! The adventure is complete.'); return; }
+    if (run.act >= ACTS && !isEndless(run)) { run.status = 'won'; logEvent(run, 'Champions! The adventure is complete.'); return; }
     run.act++;
     run.pos = null;
     run.maps[run.act] = genMap(rngFor(run, 'map', run.act));
-    logEvent(run, `Act ${run.act} begins.`);
+    logEvent(run, `Act ${run.act} begins${run.act > ACTS ? ` (the ${bossTitle(run.act)} awaits)` : ''}.`);
   }
 }
 
@@ -451,7 +458,7 @@ export function makeOpponent(run, row, col, type) {
   return {
     id: `opp${run.act}${row}${col}`, city, name: rng.pick(MASCOTS[main]), abbr,
     colors: { primary: TYPE_HEX[main], secondary: second },
-    coach: { name: `${type === 'boss' ? BOSS_TITLES[run.act - 1] : 'Coach'} ${rng.pick(COACHES)}`, preset, ...COACH_PRESETS[preset] },
+    coach: { name: `${type === 'boss' ? bossTitle(run.act) : 'Coach'} ${rng.pick(COACHES)}`, preset, ...COACH_PRESETS[preset] },
     roster, kind: type, theme, strength: Math.round(c),
   };
 }
@@ -479,15 +486,17 @@ export function applyBattle(run, { pf, pa, injuredSlots = [] }) {
     out.coins = base + rng.int(0, 15);
     out.picks = type === 'battle' ? 1 : 2; // elites and bosses: take 2 of 4
     out.draft = draftOptions(run, rng, opp, type === 'battle' ? 3 : 4);
-    if (type === 'boss' && run.lives < run.maxLives) { run.lives++; out.lifeGained = true; }
+    if (type === 'boss' && hasLives(run) && run.lives < run.maxLives) { run.lives++; out.lifeGained = true; }
   } else if (tie) {
     out.coins = Math.round(base / 2);
     if (type === 'boss') out.retry = true;
   } else {
     out.coins = 10;
-    run.lives--; out.lifeLost = true;
-    if (run.lives <= 0) run.status = 'lost';
-    else if (type === 'boss') out.retry = true;
+    if (hasLives(run)) {
+      run.lives--; out.lifeLost = true;
+      if (run.lives <= 0) run.status = 'lost';
+    }
+    if (run.status !== 'lost' && type === 'boss') out.retry = true;
   }
   run.coins += out.coins;
   const vs = `${opp.city} ${opp.name}`;
@@ -582,7 +591,7 @@ function makeShop(run, rng, row) {
       { key: 'pack', name: 'Card pack (5 cards)', price: 55 + 15 * run.act, sold: false },
       { key: 'heal', name: 'Team physio: heal all injuries', price: 30, sold: false },
       { key: 'life', name: 'Second wind: +1 life', price: 90 + 20 * run.act, sold: false },
-    ],
+    ].filter((it) => it.key !== 'life' || hasLives(run)),
     packCenter: c,
   };
 }
@@ -599,7 +608,7 @@ export function buyCard(run, i) {
 export function buyItem(run, key) {
   const s = run.node?.shop, item = s?.items.find((x) => x.key === key);
   if (!item || item.sold || run.coins < item.price) return null;
-  if (key === 'life' && run.lives >= run.maxLives) return null;
+  if (key === 'life' && (!hasLives(run) || run.lives >= run.maxLives)) return null;
   if (key === 'heal' && !run.cards.some((c) => c.inj > 0)) return null;
   run.coins -= item.price; item.sold = true;
   let got = null;
@@ -626,7 +635,7 @@ export function sellCard(run, uid) {
 }
 
 // ---------------------------------------------------------------- training / rest
-export const trainingAmount = (run) => 6 + 2 * run.act;
+export const trainingAmount = (run) => Math.min(16, 6 + 2 * run.act);
 export function trainCard(run, uid) {
   const c = cardByUid(run, uid);
   if (!c || run.node?.type !== 'training' || run.node.done) return false;
@@ -651,7 +660,7 @@ export function restChoice(run, choice) {
   if (run.node?.type !== 'rest' || run.node.done) return false;
   if (choice === 'heal') { healAll(run); logEvent(run, 'Rested: all injuries healed.'); }
   else if (choice === 'life') {
-    if (run.lives >= run.maxLives) return false;
+    if (!hasLives(run) || run.lives >= run.maxLives) return false;
     run.lives++; logEvent(run, 'Rested: recovered a life.');
   } else if (choice === 'coins') { run.coins += 25; logEvent(run, 'Worked a camp: +25 coins.'); }
   run.node.done = true;
@@ -785,3 +794,10 @@ export function opponentRating(opp) {
   };
 }
 export const stepsDone = (run) => run.path.length;
+// End a run by choice (mainly for no-lives runs, which never end on their own).
+export function retire(run) {
+  if (run.status !== 'active') return;
+  run.status = 'retired';
+  run.node = null;
+  logEvent(run, `Retired in act ${run.act} after ${run.path.length} stops.`);
+}
