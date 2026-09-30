@@ -40,7 +40,11 @@ export function initAdventure(hooks) {
   H = hooks;
   root().addEventListener('click', onClick);
   // remember whether the shop's "Sell cards" section is open across re-renders
-  root().addEventListener('toggle', (e) => { if (e.target.matches?.('.shop-sell') && run?.node) run.node.sellOpen = e.target.open; }, true);
+  root().addEventListener('toggle', (e) => {
+    if (!run?.node) return;
+    if (e.target.matches?.('.shop-sell')) run.node.sellOpen = e.target.open;
+    if (e.target.matches?.('.shop-team')) run.node.teamClosed = !e.target.open;
+  }, true);
 }
 export function showAdventureHome() { run = null; H.showScreen('adventure'); renderHome(); }
 export function showAdventure() { H.showScreen('adventure'); if (run) render(); else renderHome(); }
@@ -61,6 +65,35 @@ function cardTile(c, { extra = '', cls = '', note = '' } = {}) {
     ${c.inj > 0 ? `<span class="ac-inj" title="Injured: misses ${c.inj} more battle${c.inj > 1 ? 's' : ''}">✚ ${c.inj}</span>` : ''}
     ${extra}
   </div>`;
+}
+// "What would this card do for my team?" (cached until the collection changes)
+const impactCache = new Map();
+function impacts(cands) {
+  const sig = run.cards.map((c) => `${c.uid}${c.pos}${c.inj > 0 ? 'i' : ''}${JSON.stringify(c.bonus || {})}`).join(',');
+  const key = `${run.id}|${sig}|${cands.map((c) => `${c.mon}:${c.pos}`).join(',')}`;
+  if (!impactCache.has(key)) { if (impactCache.size > 40) impactCache.clear(); impactCache.set(key, A.previewAdditions(run, cands)); }
+  return impactCache.get(key);
+}
+const slotName = (s) => (s.unit === 'B' ? `backup ${s.label}` : s.label === 'FLEX' ? `FLEX (${s.unit === 'O' ? 'offense' : 'defense'})` : s.label);
+function impactHTML(p) {
+  if (!p) return '';
+  if (p.role === 'starter') {
+    const d = p.delta >= 0.05 ? `+${p.delta.toFixed(1)} team OVR` : 'Starter';
+    return `<div class="ac-imp up">▲ ${d} · starts at ${esc(slotName(p.slot))}${p.dropped ? ` over ${esc(mon(p.dropped).name)}` : ''}${p.syn.length ? ` · <b>${esc(p.syn.join(', '))}</b>` : ''}</div>`;
+  }
+  if (p.role === 'bench') return `<div class="ac-imp">Would be your ${esc(slotName(p.slot))}</div>`;
+  return '<div class="ac-imp none">Wouldn&rsquo;t make your lineup</div>';
+}
+function lineupPanel(n) {
+  const tr = A.teamRating(run);
+  const row = (s) => {
+    const c = A.cardByUid(run, run.lineup[s.key]);
+    return `<div class="lm${c && c.inj > 0 ? ' inj' : ''}"><span class="lm-s">${esc(s.label === 'FLEX' ? `FLEX` : s.label)}</span>${c ? `<img src="${spriteUrl(mon(c))}" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="lm-n">${esc(mon(c).name)} <small>${c.pos}</small></span><b>${ovrOf(c)}</b>` : '<span class="lm-n muted">walk-on</span><b>–</b>'}</div>`;
+  };
+  return `<details class="shop-team" ${n.teamClosed ? '' : 'open'}><summary>Your lineup · Team <b>${tr.ovr}</b> OVR (${ord(tr.pct)})</summary>
+    <div class="lineup-mini">${STARTERS.map(row).join('')}</div>
+    <div class="lineup-mini bench"><span class="muted small">Bench</span>${BENCH.map(row).join('')}</div>
+    <div class="adv-actions"><button type="button" data-act="roster">Edit lineup</button></div></details>`;
 }
 const rosterCards = (roster) => ALL_SLOTS.map((s) => { const [m, p] = String(roster[s.key]).split(':'); return { slot: s, c: { mon: m, pos: p || s.pos[0] } }; });
 
@@ -253,10 +286,11 @@ function resultHTML(n) {
   else {
     const picks = r.picks || 1, taken = r.drafted || [];
     const left = picks - taken.length;
+    const imp = left > 0 ? impacts(r.draft) : [];
     const draft = r.draft.length ? `<div class="b-gtitle">Draft ${picks > 1 ? `${picks} cards` : 'a card'} from the ${esc(o.city)} ${esc(o.name)} ${left > 0 ? `(${left} left)` : ''}</div>
       <div class="acard-grid">${r.draft.map((c, i) => cardTile(c, {
         cls: taken.includes(i) ? 'picked' : '',
-        extra: taken.includes(i) ? '<span class="ac-tag">Drafted</span>' : left > 0 ? `<button type="button" class="ac-btn" data-act="draft" data-i="${i}">Draft</button>` : '',
+        extra: taken.includes(i) ? '<span class="ac-tag">Drafted</span>' : left > 0 ? `${impactHTML(imp[i])}<button type="button" class="ac-btn" data-act="draft" data-i="${i}">Draft</button>` : '',
       })).join('')}</div>` : '';
     after = `${draft}${cont(left > 0 && r.draft.length ? 'Skip draft ▶' : n.type === 'boss' ? (run.act >= A.ACTS ? 'Claim the title ▶' : `On to act ${run.act + 1} ▶`) : 'Back to the map ▶')}`;
   }
@@ -276,10 +310,12 @@ function shopHTML(n) {
   const s = n.shop;
   const inLineup = new Set(Object.values(run.lineup));
   const sellable = run.cards.slice().sort((a, b) => (inLineup.has(a.uid) - inLineup.has(b.uid)) || ovrOf(a) - ovrOf(b));
-  return `<div class="b-gtitle">Cards for sale · you have 🪙 ${run.coins}</div>
+  const imp = impacts(s.cards.filter((c) => !c.sold));
+  const impOf = (c) => imp[s.cards.filter((x) => !x.sold).indexOf(c)];
+  return `${lineupPanel(n)}<div class="b-gtitle">Cards for sale · you have 🪙 ${run.coins}</div>
     <div class="acard-grid">${s.cards.map((c, i) => cardTile(c, {
       cls: c.sold ? 'picked' : '',
-      extra: c.sold ? '<span class="ac-tag">Sold</span>' : `<button type="button" class="ac-btn" data-act="buy" data-i="${i}" ${run.coins < c.price ? 'disabled' : ''}>🪙 ${c.price}</button>`,
+      extra: c.sold ? '<span class="ac-tag">Sold</span>' : `${impactHTML(impOf(c))}<button type="button" class="ac-btn" data-act="buy" data-i="${i}" ${run.coins < c.price ? 'disabled' : ''}>🪙 ${c.price}</button>`,
     })).join('')}</div>
     <div class="b-gtitle">Services</div>
     <div class="shop-items">${s.items.map((it) => {
@@ -337,8 +373,9 @@ function eventHTML(n) {
   if (e.ctx.card) cards.push(e.ctx.card);
   if (e.ctx.get) cards.push(e.ctx.get);
   const give = e.ctx.give ? A.cardByUid(run, e.ctx.give) : null;
+  const imp = !e.done && e.id === 'freeAgent' ? impacts([e.ctx.card]) : [];
   return `<h3 class="ev-title">${esc(def.title)}</h3><p>${esc(def.text(run, e.ctx))}</p>
-    ${cards.length || give ? `<div class="acard-grid">${give ? cardTile(give, { note: 'You give' }) : ''}${cards.map((c) => cardTile(c, { note: give ? 'You get' : '' })).join('')}</div>` : ''}
+    ${cards.length || give ? `<div class="acard-grid">${give ? cardTile(give, { note: 'You give' }) : ''}${cards.map((c, i) => cardTile(c, { note: give ? 'You get' : '', extra: impactHTML(imp[i]) })).join('')}</div>` : ''}
     ${e.done ? `<div class="adv-msg">${esc(e.message)}</div>${cont()}` : `<div class="adv-actions">${A.eventOptions(run).map((o) => `<button type="button" data-act="ev" data-k="${o.key}" ${o.disabled ? 'disabled' : ''}>${esc(o.label)}</button>`).join('')}</div>`}`;
 }
 

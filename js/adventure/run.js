@@ -5,8 +5,8 @@ import { RNG } from '../rng.js';
 import { POKEMON } from '../data/pokemon.js';
 import { COACH_PRESETS } from '../data/teams.js';
 import { POSITIONS } from '../ratings.js';
-import { ALL_SLOTS, STARTERS, cardValue } from '../roster.js';
-import { tierFor, SYNERGIES } from '../synergy.js';
+import { ALL_SLOTS, STARTERS, BENCH, cardValue } from '../roster.js';
+import { tierFor, tierName, SYNERGIES } from '../synergy.js';
 import { randomCard, openPack, priceOf, sellValue, pctOfCard, ovrOf, trainingBoost, randomPos } from './cards.js';
 
 export const ACTS = 3;
@@ -74,8 +74,7 @@ export const SYNERGY_WORTH = [0, 1, 2, 3];
 const UNITS = ['O', 'D'].map((u) => STARTERS.filter((s) => s.unit === u));
 
 // Starting lineup value: starters' OVR plus active type synergies in each unit.
-export function lineupScore(run, lineup, ovr = new Map()) {
-  const byUid = new Map(run.cards.map((c) => [c.uid, c]));
+export function lineupScore(run, lineup, ovr = new Map(), byUid = new Map(run.cards.map((c) => [c.uid, c]))) {
   const o = (c) => { if (!ovr.has(c.uid)) ovr.set(c.uid, ovrOf(c)); return ovr.get(c.uid); };
   let total = 0;
   for (const s of STARTERS) { const c = byUid.get(lineup[s.key]); total += c ? o(c) : 30; } // 30: a walk-on
@@ -89,11 +88,12 @@ export function lineupScore(run, lineup, ovr = new Map()) {
 
 // Best starters for the synergy-aware score: greedy lineups (plain, and one leaning toward
 // each type the collection could stack), each improved by single swaps; keep the best.
-function bestStarters(run, ranked) {
+// start: improve from this lineup instead (used to preview one added card quickly).
+function bestStarters(run, ranked, start = null) {
   const ovr = new Map(ranked.map((x) => [x.c.uid, x.ovr]));
   const cards = ranked.map((x) => x.c);
   const byUid = new Map(cards.map((c) => [c.uid, c]));
-  const score = (l) => lineupScore(run, l, ovr);
+  const score = (l) => lineupScore(run, l, ovr, byUid);
   const order = [...STARTERS.filter((s) => s.pos.length === 1), ...STARTERS.filter((s) => s.pos.length > 1)];
   const greedy = (bias) => {
     const l = {}, used = new Set();
@@ -127,12 +127,67 @@ function bestStarters(run, ranked) {
     }
     return { l, best };
   };
+  if (start) return improve({ ...start }).l;
   const typeCounts = {};
   for (const c of cards) for (const t of POKEMON[c.mon].types) typeCounts[t] = (typeCounts[t] || 0) + 1;
   const seeds = [null, ...Object.keys(typeCounts).filter((t) => typeCounts[t] >= 2)];
   let top = null;
   for (const b of seeds) { const r = improve(greedy(b)); if (!top || r.best > top.best) top = r; }
   return top.l;
+}
+
+const rankHealthy = (cards) => cards.filter(healthy).map((c) => ({ c, ovr: ovrOf(c) })).sort((a, b) => b.ovr - a.ovr);
+const starterAvg = (cards, l) => {
+  const byUid = new Map(cards.map((c) => [c.uid, c]));
+  const v = STARTERS.map((s) => byUid.get(l[s.key])).map((c) => (c ? ovrOf(c) : 30));
+  return v.reduce((a, b) => a + b, 0) / v.length;
+};
+const unitTiers = (cards, l) => {
+  const byUid = new Map(cards.map((c) => [c.uid, c]));
+  return UNITS.map((unit) => {
+    const counts = {};
+    for (const s of unit) { const c = byUid.get(l[s.key]); if (c) for (const t of POKEMON[c.mon].types) counts[t] = (counts[t] || 0) + 1; }
+    return Object.fromEntries(Object.entries(counts).map(([t, n]) => [t, tierFor(n)]).filter(([t, n]) => n && SYNERGIES[t]));
+  });
+};
+// Which bench slots the best remaining cards would fill (one per position, no repeated Pokémon).
+function benchFill(ranked, starters) {
+  const byUid = new Map(ranked.map((x) => [x.c.uid, x.c]));
+  const used = new Set(Object.values(starters)), mons = new Set([...used].map((u) => byUid.get(u)?.mon));
+  const out = {};
+  for (const s of BENCH) {
+    const pick = ranked.find(({ c }) => s.pos.includes(c.pos) && !used.has(c.uid) && !mons.has(c.mon));
+    if (pick) { out[s.key] = pick.c.uid; used.add(pick.c.uid); mons.add(pick.c.mon); }
+  }
+  return out;
+}
+
+// What adding each candidate card ({mon, pos, bonus?}) would do to your best lineup:
+// { role: 'starter'|'bench'|'none', slot, delta (team OVR), dropped (card leaving the starters), syn: ['Fire II', ...] }
+export function previewAdditions(run, cands) {
+  const ranked = rankHealthy(run.cards);
+  const base = bestStarters(run, ranked);
+  const baseAvg = starterAvg(run.cards, base);
+  const baseTiers = unitTiers(run.cards, base);
+  const byUid = new Map(run.cards.map((c) => [c.uid, c]));
+  return cands.map((cand) => {
+    const tmp = { uid: '__new', mon: cand.mon, pos: cand.pos, bonus: cand.bonus || {}, inj: 0 };
+    const cards = [...run.cards, tmp];
+    const ranked2 = rankHealthy(cards);
+    const l = bestStarters({ ...run, cards }, ranked2, base);
+    const slot = STARTERS.find((s) => l[s.key] === '__new');
+    if (slot) {
+      const now = new Set(Object.values(l));
+      const droppedUid = Object.values(base).find((u) => !now.has(u));
+      const tiers = unitTiers(cards, l);
+      const syn = [];
+      tiers.forEach((u, i) => { for (const t in u) if (u[t] > (baseTiers[i][t] || 0)) syn.push(`${SYNERGIES[t].name} ${tierName(u[t])}`); });
+      return { role: 'starter', slot, delta: starterAvg(cards, l) - baseAvg, dropped: droppedUid ? byUid.get(droppedUid) : null, syn };
+    }
+    const bench = benchFill(ranked2, l);
+    const bslot = BENCH.find((s) => bench[s.key] === '__new');
+    return bslot ? { role: 'bench', slot: bslot, delta: 0, syn: [] } : { role: 'none', delta: 0, syn: [] };
+  });
 }
 
 export function autoLineup(run, keep = false) {
