@@ -1414,9 +1414,19 @@ function carrierLogic(S, c) {
   }
 }
 
+// Sideline sense: on 3rd/4th down a runner short of the sticks ignores the sideline until he
+// has the first down; in the hurry-up he gains what he can and heads out as defenders close;
+// when protecting a late lead (or needing the sticks) he keeps well away from the sideline.
 function chooseHeading(S, c, g) {
-  const W = S.W;
-  const wantOOB = c.side === 'O' && S.situation.wantOOB;
+  const W = S.W, sit = S.situation;
+  const off = c.side === 'O';
+  const needSticks = off && (sit.down ?? 1) >= 3 && c.x < S.los + (sit.toGo ?? 10) - 0.3;
+  const wantOOB = off && sit.wantOOB && !needSticks;
+  const critical = off && (sit.protect || needSticks);
+  let threat = Infinity;
+  if (wantOOB) for (const o of S.ents) if (o.side !== c.side && !o.down && !o.engaged && S.t >= o.stunUntil) threat = Math.min(threat, hyp(o.x - c.x, o.y - c.y));
+  const drift = wantOOB ? (threat < 3.5 ? 0.6 : threat < 7 ? 0.3 : 0.08) : 0;
+  const margin = critical ? 1.8 : 1.0, edgePen = critical ? 4 : 2.5;
   let best = null, bestScore = -Infinity;
   const prev = c.heading;
   for (let a = -84; a <= 84; a += 12) {
@@ -1433,9 +1443,11 @@ function chooseHeading(S, c, g) {
         const gap = hyp(o.x - px, o.y - py) - reach;
         if (gap < 2.2) score -= (2.2 - gap) * (2.2 - gap) * (L === 1.5 ? 0.16 : 0.1) * (o.engaged ? 0.7 : 1);
       }
-      if (py < 0.7 || py > W - 0.7) score -= wantOOB ? -0.2 : 2.5;
+      const edge = Math.min(py, W - py);
+      if (wantOOB) { if (edge < 0.7 && drift >= 0.3) score += 0.2; }
+      else if (edge < margin) score -= edgePen * (1 - Math.max(0, edge) / margin + (edge < 0 ? 1 : 0)) * 0.6;
     }
-    if (wantOOB) score += (c.y < W / 2 ? -dy : dy) * 0.5;
+    if (wantOOB) score += (c.y < W / 2 ? -dy : dy) * drift;
     if (prev) score += (dx * prev.dx + dy * prev.dy) * 0.25; // smoothness
     if (c.r.vision < 99) score += S.rng.gauss(0, (100 - c.r.vision) * 0.004); // vision: seeing the right hole
     if (score > bestScore) { bestScore = score; best = { dx, dy }; }

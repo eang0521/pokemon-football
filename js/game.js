@@ -404,6 +404,7 @@ export class Game {
         down: this.down, toGo: this.toGo,
         desperate: sit.secsGame <= 20 && sit.diff < 0 && this.quarter >= 4,
         wantOOB: sit.twoMinute && (this.quarter === 2 || sit.diff <= 0),
+        protect: sit.killClock, // leading late: stay in bounds, keep the clock running
       },
     };
   }
