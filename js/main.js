@@ -495,8 +495,23 @@ $('#btn-sim3').addEventListener('click', () => {
   el.classList.remove('hidden');
   ctl.client.send({ type: 'simTo', secsLeft: SIM_TO_SECS });
 });
+$('#btn-simq').addEventListener('click', () => {
+  if (!ctl.game || ctl.phase === 'final' || ctl.simming || ctl.game.final) return;
+  if (ctl.replay) endReplay();
+  ctl.simming = true;
+  ctl.simQuarter = ctl.game.quarter;
+  setPlaying(false);
+  ctl.queue = [];
+  const el = $('#final');
+  el.innerHTML = `<h3 id="sim-progress">Simulating…</h3><div class="stars">Skipping to the end of the ${ctl.game.quarter >= 5 ? 'game' : `${qText(ctl.game.quarter)} quarter`}.</div>`;
+  el.classList.remove('hidden');
+  ctl.client.send({ type: 'simTo', quarter: true });
+});
 function canSimTo() { const g = ctl.game; return !!g && !g.final && g.quarter < 5 && g.secsLeft > SIM_TO_SECS; }
-function syncSimTo() { $('#btn-sim3').disabled = !canSimTo() || ctl.phase === 'final'; }
+function syncSimTo() {
+  $('#btn-sim3').disabled = !canSimTo() || ctl.phase === 'final';
+  $('#btn-simq').disabled = !ctl.game || ctl.game.final || ctl.phase === 'final';
+}
 function finishSimTo(m) {
   ctl.simming = false;
   ctl.queue = []; ctl.requested = 0;
@@ -507,12 +522,16 @@ function finishSimTo(m) {
   $('#final').classList.add('hidden');
   renderScorebug(ctl.game.snapshot());
   renderPanels();
-  $('#lastplay').innerHTML = `<span class="muted">Simulated to ${clockText(ctl.game.snap.clock)} left in the ${qText(ctl.game.quarter)} quarter. Press <b>Play</b> to watch the finish.</span>`;
+  const q = ctl.simQuarter; ctl.simQuarter = null;
+  $('#lastplay').innerHTML = q
+    ? `<span class="muted">Simulated the rest of the ${qText(q)} quarter. Up next: ${q === 2 ? 'the second half' : q >= 4 ? 'overtime' : `the ${qText(q + 1)} quarter`}. Press <b>Play</b> to keep watching.</span>`
+    : `<span class="muted">Simulated to ${clockText(ctl.game.snap.clock)} left in the ${qText(ctl.game.quarter)} quarter. Press <b>Play</b> to watch the finish.</span>`;
   requestMore();
 }
 
 function finishSim() {
   ctl.simming = false;
+  ctl.simQuarter = null;
   ctl.game.apply(ctl.finalState);
   const last = ctl.simLast || ctl.cur;
   if (last) { recFrames(last); ctl.cur = last; ctl.playDur = (last.frames.length - 1) * 0.05; ctl.renderer.ensureTokens(last, ctl.game); }
