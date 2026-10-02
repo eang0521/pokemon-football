@@ -52,7 +52,7 @@ button.on { background: var(--accent2); border-color: var(--accent2); color: #ff
 .vs { font-family: var(--display); font-size: 22px; color: var(--muted); }
 .setup-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .seed { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
-.seed input { width: 110px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.seed input[type=number] { width: 110px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .team-card { text-align: left; padding: 0; overflow: hidden; border-radius: var(--radius); background: var(--panel); display: flex; flex-direction: column; }
 .team-card .band { height: 70px; position: relative; display: flex; align-items: flex-end; gap: 0; padding: 0 10px; overflow: hidden; }
@@ -522,3 +522,125 @@ button.big { font-size: 16px; padding: 10px 20px; }
 .as-row em { font-style: normal; text-align: right; color: var(--text); }
 .as-row em small { color: var(--good); margin-left: 2px; }
 .adv-back { padding: 5px 10px; font-weight: 600; }
+
+/* ---------- mobile & touch ---------- */
+.l-short { display: none; }
+.opts-btn { display: none; }
+button, select, label, .token { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+/* full-screen ("theater") toggle in the corner of the field */
+.stage-btn { position: absolute; right: 8px; top: 8px; z-index: 12; width: 34px; height: 34px; padding: 0; display: grid; place-items: center; background: rgba(14,17,22,.6); border-color: rgba(255,255,255,.18); opacity: .75; }
+.stage-btn:hover:not(:disabled) { opacity: 1; background: rgba(14,17,22,.85); }
+.stage-btn svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.stage-btn .i-close, body.theater .stage-btn .i-open { display: none; }
+body.theater .stage-btn .i-close { display: block; }
+
+/* theater: scorebug + field + transport controls fill the screen */
+body.theater { overflow: hidden; }
+body.theater .game { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; gap: 6px; background: var(--bg);
+  padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); }
+body.theater .panel, body.theater .lastplay, body.theater .toggles, body.theater .opts-btn { display: none !important; }
+body.theater .stage-wrap { flex: 1; min-height: 0; gap: 6px; }
+body.theater .stage { flex: 1; min-height: 0; aspect-ratio: auto; margin: 0; border-radius: var(--radius); }
+body.theater .controls { justify-content: center; padding: 6px 8px; flex: none; }
+body.theater .ctrl-main { position: static; display: flex; padding: 0; background: none; border: 0; backdrop-filter: none; }
+body.theater .sb-team { padding: 3px 10px; }
+body.theater .sb-team .logo, body.theater .sb-team .logo img { width: 32px; height: 32px; }
+body.theater .sb-team .city { display: none; }
+body.theater .sb-team .pts { font-size: 28px; }
+body.theater .sb-mid { padding: 3px 12px; }
+body.theater .sb-clock { font-size: 18px; }
+
+/* phones held sideways: keep the field inside the screen */
+@media (orientation: landscape) and (max-height: 500px) {
+  .stage { aspect-ratio: auto; height: min(56.25vw, calc(100svh - 90px)); min-height: 200px; }
+  .panel { max-height: 90svh; }
+  .matchup-bar, .adv-top { position: static; }
+}
+
+/* fingers instead of a mouse */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px; } /* stops iOS zooming in on focus */
+  .controls button, .tabs button, .modes button, .topbar button { min-height: 40px; }
+  .toggles label { font-size: 14px; }
+  .toggles input[type=checkbox] { width: 18px; height: 18px; }
+  .stage-btn { width: 40px; height: 40px; opacity: .85; }
+  .replay-btn { padding: 2px 8px; line-height: 20px; font-size: 11px; }
+  .b-filters input, .b-filters select, .b-ident input[type=text] { font-size: 16px; }
+}
+
+/* phones (portrait) */
+@media (max-width: 640px) {
+  .topbar { gap: 8px; padding: max(8px, env(safe-area-inset-top)) 12px 8px; }
+  .brand { gap: 8px; min-width: 0; }
+  .brand h1 { font-size: 16px; line-height: 1.05; }
+  .ball-icon { width: 26px; height: 26px; }
+  .modes { margin-right: 0; }
+  .modes button { padding: 5px 8px; }
+  #btn-new { padding: 5px 10px; white-space: nowrap; }
+  .l-long { display: none; }
+  .l-short { display: inline; }
+
+  /* setup: a compact sticky matchup bar */
+  .matchup-bar { padding: 8px; gap: 8px; }
+  .matchup-bar .slot { min-width: 0; flex: 1 1 0; padding: 6px 10px; }
+  .slot-name { font-size: 14px; }
+  .vs { font-size: 18px; }
+  .setup-actions { width: 100%; }
+  .setup-actions .seed input[type=number] { width: 84px; }
+  #btn-start { flex: 1; }
+  .setup-intro p { font-size: 13px; }
+
+  /* game: edge-to-edge field, transport controls docked at the bottom */
+  .game { gap: 8px; }
+  .stage { margin: 0 -16px; width: auto; border-radius: 0; border-left: 0; border-right: 0; }
+  .controls { justify-content: space-between; gap: 8px; }
+  .ctrl-main { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: grid; grid-template-columns: 1.3fr repeat(4, 1fr); gap: 6px;
+    padding: 8px max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+    background: rgba(22, 27, 34, .96); border-top: 1px solid var(--line); backdrop-filter: blur(8px); }
+  .ctrl-main button { padding: 6px 2px; min-height: 44px; font-size: 13px; white-space: nowrap; }
+  body:has(#game:not(.hidden)) { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+  body.theater:has(#game:not(.hidden)) { padding-bottom: 0; }
+  .opts-btn { display: inline-block; }
+  .opts-btn[aria-expanded=true] { border-color: var(--accent2); color: #fff; }
+  .toggles { display: none; width: 100%; gap: 10px 16px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .controls.open .toggles { display: flex; }
+  .controls { padding: 6px 8px; }
+  .speed { gap: 4px; }
+  .speed button { min-width: 38px; padding: 6px; }
+  .opts-btn { padding: 6px 10px; }
+  .lastplay { font-size: 13px; }
+  .panel { max-height: 70svh; }
+  .tabs button { font-size: 12px; padding: 10px 2px; }
+  .pcard { width: 210px; font-size: 11px; }
+  .replay-badge { font-size: 11.5px; gap: 6px; padding: 5px 8px; }
+  .final { padding: 12px; gap: 6px; }
+  .final .stars { font-size: 12.5px; }
+
+  /* builder: identity fields on a grid, action buttons fill the row */
+  .b-ident { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); width: 100%; }
+  .b-ident input[type=text] { width: 100%; grid-column: span 3; }
+  .b-ident input.abbr { grid-column: span 2; }
+  .b-ident .color { grid-column: span 2; justify-content: center; }
+  .b-actions { width: 100%; }
+  .b-actions button { flex: 1 1 auto; }
+
+  /* scorebug: leave room for the team abbreviation */
+  .sb-team { gap: 6px; padding: 6px 8px; }
+  .sb-team .pts { min-width: 30px; }
+  .sb-mid { min-width: 0; padding: 4px 6px; }
+
+  /* theater on a portrait phone: the field is drawn sideways, so a tall stage would
+     zoom right in; keep it square and use the leftover room for the last play */
+  body.theater .ctrl-main { display: grid; width: 100%; }
+  body.theater .stage { flex: none; aspect-ratio: 1 / 1; margin: 0 -6px; border-radius: 0; }
+  body.theater .lastplay { display: block !important; order: 1; flex: 0 1 auto; overflow: auto; min-height: 0; }
+  body.theater .controls { order: 2; margin-top: auto; }
+  body.theater .speed { width: 100%; justify-content: center; }
+  body.theater .sb-team .nick .full { display: none; }
+  body.theater .sb-team .nick .short { display: inline; }
+}
+@media (max-width: 380px) {
+  .modes button { padding: 5px 6px; font-size: 12px; }
+  .brand h1 { font-size: 14px; }
+  .ctrl-main button { font-size: 12px; }
+}

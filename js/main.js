@@ -64,9 +64,10 @@ function showScreen(name) {
   for (const id of ['setup', 'builder', 'game', 'adventure']) $(`#${id}`).classList.toggle('hidden', id !== name);
   const adv = name === 'adventure' || (name === 'game' && ctl.adventure);
   $('#btn-new').classList.toggle('hidden', name === 'setup' || name === 'adventure');
-  $('#btn-new').textContent = name === 'builder' ? 'Back to teams' : adv ? 'Back to adventure' : 'New game';
+  const [long, short] = name === 'builder' ? ['Back to teams', '‹ Teams'] : adv ? ['Back to adventure', '‹ Back'] : ['New game', 'New'];
+  $('#btn-new').innerHTML = `<span class="l-long">${long}</span><span class="l-short">${short}</span>`;
   $$('.modes [data-mode]').forEach((b) => b.classList.toggle('on', (b.dataset.mode === 'adventure') === !!adv));
-  if (name !== 'game') { ctl.playing = false; }
+  if (name !== 'game') { ctl.playing = false; setTheater(false); }
   window.scrollTo(0, 0);
 }
 $$('.modes [data-mode]').forEach((b) => b.addEventListener('click', () => {
@@ -569,6 +570,46 @@ document.addEventListener('keydown', (e) => {
   if ($('#game').classList.contains('hidden') || e.target.matches('input, select, textarea')) return;
   if (e.code === 'Space') { e.preventDefault(); $('#btn-play').click(); }
   if (e.key === 'n') $('#btn-step').click();
+  if (e.key === 'f') setTheater(!document.body.classList.contains('theater'));
+  if (e.key === 'Escape' && document.body.classList.contains('theater')) setTheater(false);
+});
+
+// ==========================================================================
+// Mobile / touch
+// Theater: scorebug, field and transport controls fill the screen. Real fullscreen
+// (and a landscape lock on phones) where the browser allows it, CSS-only otherwise (iPhone).
+const COARSE = window.matchMedia('(pointer: coarse)');
+function setTheater(on) {
+  if (on === document.body.classList.contains('theater')) return;
+  document.body.classList.toggle('theater', on);
+  $('#btn-theater').setAttribute('aria-pressed', String(on));
+  $('#btn-theater').title = on ? 'Exit full screen (F)' : 'Full screen (F)';
+  const root = document.documentElement;
+  if (on && !document.fullscreenElement && root.requestFullscreen) {
+    root.requestFullscreen({ navigationUI: 'hide' })
+      .then(() => { if (COARSE.matches) return screen.orientation?.lock?.('landscape'); })
+      .catch(() => {});
+  } else if (!on && document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+$('#btn-theater').addEventListener('click', (e) => { e.stopPropagation(); setTheater(!document.body.classList.contains('theater')); });
+// leaving browser fullscreen (Esc, Android back) also leaves theater
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) setTheater(false); });
+
+$('#btn-opts').addEventListener('click', () => {
+  const open = $('.controls').classList.toggle('open');
+  $('#btn-opts').setAttribute('aria-expanded', String(open));
+});
+
+// On touch screens, tapping the field plays / pauses (tapping a player still opens their card).
+$('#stage').addEventListener('click', (e) => {
+  if (!COARSE.matches || e.target.closest('button, a, select, .final, .replay-badge')) return;
+  const card = $('#pcard');
+  if (card && !card.classList.contains('hidden')) return; // this tap just closes the player card
+  if (ctl.phase === 'final' && !ctl.replay) return;
+  $('#btn-play').click();
+  showToast(ctl.playing ? '▶' : '❚❚', true);
 });
 
 // ==========================================================================

@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#161b22" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Pokémon Gridiron</title>
   <meta name="description" content="Watch a fully simulated 7-on-7 football game where every player is a Pokémon." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -24,7 +28,7 @@
       <button type="button" data-mode="exhibition" class="on">Exhibition</button>
       <button type="button" data-mode="adventure">Adventure</button>
     </nav>
-    <button id="btn-new" class="ghost hidden" type="button">New game</button>
+    <button id="btn-new" class="ghost hidden" type="button"><span class="l-long">New game</span><span class="l-short">New</span></button>
   </header>
 
   <!-- ============ SETUP ============ -->
@@ -113,14 +117,18 @@
         <div id="playcard" class="playcard hidden"></div>
         <div id="toast" class="toast hidden"></div>
         <div id="final" class="final hidden"></div>
+        <button id="btn-theater" class="stage-btn" type="button" title="Full screen (F)" aria-label="Full screen" aria-pressed="false">
+          <svg class="i-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+          <svg class="i-close" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg>
+        </button>
       </div>
       <div class="controls">
-        <div class="ctrl-group">
+        <div class="ctrl-group ctrl-main">
           <button id="btn-play" type="button" class="primary" aria-label="Play or pause">▶ Play</button>
-          <button id="btn-step" type="button" title="Run the next play, then pause">Next play</button>
-          <button id="btn-simq" type="button" title="Simulate the rest of this quarter instantly, then keep watching">Sim quarter</button>
-          <button id="btn-sim3" type="button" title="Simulate instantly until 3:00 is left in the 4th quarter, then keep watching">Sim to 3:00</button>
-          <button id="btn-sim" type="button" title="Simulate the rest of the game instantly">Sim to end</button>
+          <button id="btn-step" type="button" title="Run the next play, then pause">Next<span class="l-long"> play</span></button>
+          <button id="btn-simq" type="button" title="Simulate the rest of this quarter instantly, then keep watching">Sim <span class="l-long">quarter</span><span class="l-short">Q</span></button>
+          <button id="btn-sim3" type="button" title="Simulate instantly until 3:00 is left in the 4th quarter, then keep watching">Sim <span class="l-long">to </span>3:00</button>
+          <button id="btn-sim" type="button" title="Simulate the rest of the game instantly">Sim <span class="l-long">to </span>end</button>
         </div>
         <div class="ctrl-group speed" role="group" aria-label="Playback speed">
           <span class="ctrl-label">Speed</span>
@@ -129,7 +137,8 @@
           <button data-speed="2" type="button">2×</button>
           <button data-speed="4" type="button">4×</button>
         </div>
-        <div class="ctrl-group toggles">
+        <button id="btn-opts" type="button" class="ghost opts-btn" aria-expanded="false" aria-controls="ctrl-toggles">⚙ Options</button>
+        <div class="ctrl-group toggles" id="ctrl-toggles">
           <label><input type="checkbox" id="opt-routes" checked /> Play design</label>
           <label><input type="checkbox" id="opt-reads" checked /> QB reads</label>
           <label><input type="checkbox" id="opt-names" /> Names</label>
