@@ -9,6 +9,7 @@ import { ALL_SLOTS, STARTERS, BENCH, PERSONNEL, FRONTS, personnelOf, frontOf } f
 import { spriteUrl } from '../render.js';
 import { TYPE_COLORS, synergyChips, unitCounts, coachControls } from '../builder.js';
 import { openModal, closeModal } from '../modal.js';
+import { storageErrorText } from '../storage.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -20,13 +21,19 @@ const nm = (c) => `${mon(c).name} (${c.pos})`;
 // ---------------------------------------------------------------- saves
 const KEY = 'pgf:adventures';
 function loadRuns() { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } }
-function writeRuns(list) { try { localStorage.setItem(KEY, JSON.stringify(list)); return true; } catch { return false; } }
+// Only the current act's map is ever read again, so saves drop the rest (endless runs pile them up).
+const compact = (r) => (r.maps && Object.keys(r.maps).length > 1 ? { ...r, maps: { [r.act]: r.maps[r.act] } } : r);
+let saveError = null;
+let saveWarn = null; // stays on screen until a save works again (unlike one-off messages)
+function writeRuns(list) {
+  try { localStorage.setItem(KEY, JSON.stringify(list.map(compact))); saveError = null; saveWarn = null; return true; } catch (e) { saveError = e; return false; }
+}
 function save() {
   if (!run) return;
   run.updated = Date.now();
   const list = loadRuns().filter((r) => r.id !== run.id);
   list.unshift(run);
-  if (!writeRuns(list)) flash('Could not save: browser storage is full or blocked.');
+  if (!writeRuns(list)) saveWarn = storageErrorText(saveError);
 }
 function deleteRun(id) { writeRuns(loadRuns().filter((r) => r.id !== id)); }
 
@@ -197,7 +204,7 @@ function render() {
   if (run.status !== 'active' && !(run.node && run.node.stage === 'result')) body = summaryHTML();
   else if (run.node) body = nodeHTML();
   else body = mapHTML();
-  root().innerHTML = `${top}${msg ? `<div class="adv-msg">${esc(msg)}</div>` : ''}<div class="adv-body">${body}</div>`;
+  root().innerHTML = `${top}${saveWarn ? `<div class="adv-warn">⚠ ${esc(saveWarn)}</div>` : ''}${msg ? `<div class="adv-msg">${esc(msg)}</div>` : ''}<div class="adv-body">${body}</div>`;
   msg = null;
 }
 

@@ -3,7 +3,7 @@ import { POKEMON_LIST, POKEMON } from './data/pokemon.js';
 import { cardRatings, overall, STAT_KEYS, STAT_LABELS, POS_NAMES } from './ratings.js';
 import { STARTERS, BENCH, SLOT, parseCard, cardValue, validateRoster, PERSONNEL, FRONTS, personnelOf, frontOf } from './roster.js';
 import { COACH_PRESETS } from './data/teams.js';
-import { saveCustomTeam, deleteCustomTeam } from './storage.js';
+import { saveCustomTeam, deleteCustomTeam, storageErrorText, lastStorageError } from './storage.js';
 import { encodeTeam, shareLink } from './teamcode.js';
 import { openModal, copyText } from './modal.js';
 import { SYNERGIES, TIER_COUNTS, unitSynergies, tierName } from './synergy.js';
@@ -234,7 +234,7 @@ function save() {
   t.colors = { primary: $('#b-c1').value, secondary: $('#b-c2').value };
   const errors = validateRoster(t.roster);
   if (errors.length) { alert(`Finish your roster first:\n• ${errors.slice(0, 8).join('\n• ')}`); return; }
-  if (!saveCustomTeam(t)) { alert('Could not save (browser storage unavailable).'); return; }
+  if (!saveCustomTeam(t)) { alert(storageErrorText(lastStorageError())); return; }
   state.onSave(t);
 }
 

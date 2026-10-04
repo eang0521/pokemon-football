@@ -46,6 +46,8 @@ Every card is a **Pokémon at a position**, for example Delphox QB or Delphox DB
 | DB | Stamina | Tackling | Press | Ball skills | Coverage | Speed |
 | K | Stamina | Leg power | — | Accuracy | Composure | — |
 
+A kicker's Composure matters on pressure kicks: late in the 4th quarter or in overtime, especially a kick that ties the game or takes the lead. A shaky kicker misses up to about 1.8x as often, and an ice-cold one gets slightly better.
+
 Traits a position doesn't train still come from the same stat at an 85% discount (a WR who has to tackle after an interception uses his Attack at 85%). Weight and height stay universal: mass in collisions and catch radius.
 
 ### Rosters

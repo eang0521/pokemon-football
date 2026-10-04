@@ -941,12 +941,29 @@ export class Game {
     return rec;
   }
 
-  fgProb(K, dist) {
+  // pressure: 0..1 (kickPressure). Composure decides how much it bites: shaky kickers
+  // miss up to ~1.8x as often on a pressure kick, ice-cold ones get slightly better.
+  fgProb(K, dist, pressure = 0) {
     const acc = K.ratings.kacc, pow = K.ratings.kpow;
     const maxD = 41 + pow * 0.15;
     let p = 0.99 - Math.max(0, dist - 22) * 0.011 * (1.45 - acc / 100);
     if (dist > maxD - 6) p -= (dist - (maxD - 6)) * 0.06;
+    p = clamp(p, 0.02, 0.99);
+    if (pressure > 0) p = 1 - (1 - p) * (1 + pressure * (0.9 - K.ratings.comp / 100) * 1.5);
     return clamp(p, 0.02, 0.99);
+  }
+
+  // How much a kick matters: ramps up over the last 5 minutes of the 4th (always on in OT),
+  // highest when the kick ties the game or takes the lead.
+  kickPressure(i, pts) {
+    if (this.quarter < 4) return 0;
+    const late = this.quarter >= 5 ? 1 : clamp(1 - (this.clock - 30) / 270, 0, 1);
+    const margin = this.score[i] - this.score[1 - i];
+    const stakes = margin <= 0 && margin + pts >= 0 ? 1 // ties it or takes the lead
+      : margin < 0 && margin >= -8 ? 0.5 // still need another score
+      : margin > 0 && margin <= 8 ? 0.4 // padding a one-score lead
+      : 0.1;
+    return late * stakes;
   }
 
   doFieldGoal(reason, pat = false) {
@@ -954,7 +971,8 @@ export class Game {
     const K = this.depth[i].K;
     const los = pat ? 85 : this.ballOn;
     const dist = 100 - los + 17;
-    const p = this.fgProb(K, dist);
+    const pressure = this.kickPressure(i, pat ? 1 : 3);
+    const p = this.fgProb(K, dist, pressure);
     const blocked = this.rng.chance(pat ? 0.005 : 0.012);
     const good = !blocked && this.rng.chance(p);
     const S = this.stats.players[K.id];
@@ -987,7 +1005,7 @@ export class Game {
     }
     const rec = { type: pat ? 'pat' : 'fg', ...sf, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: null, design: null, events: [], text,
       highlight: good && !pat ? 'fg' : (!good ? 'miss' : null),
-      presnap: { dd, spot, offCall: pat ? 'Extra Point' : `${dist}-yd Field Goal`, defCall: 'FG Block', offReason: pat ? '' : `${reason} (${Math.round(p * 100)}% make)`, defReason: '', offTeam: i } };
+      presnap: { dd, spot, offCall: pat ? 'Extra Point' : `${dist}-yd Field Goal`, defCall: 'FG Block', offReason: pat ? (pressure >= 0.5 ? `Pressure kick (composure ${K.ratings.comp})` : '') : `${reason} (${Math.round(p * 100)}% make${pressure >= 0.5 ? `, pressure kick, composure ${K.ratings.comp}` : ''})`, defReason: '', offTeam: i } };
     if (pat) {
       this.afterPAT(i);
     } else {
