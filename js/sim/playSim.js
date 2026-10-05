@@ -62,7 +62,7 @@ function zoneSpot(name, S) {
   switch (base) {
     case 'deepMid': depth = 14.5; y = (W / 2 + ballY) / 2; halfW = 16; deep = true; break;
     case 'half': depth = 13.5; y = W / 2 + side * (W / 4); halfW = 10; deep = true; break;
-    case 'third': depth = 13; y = W / 2 + side * (W / 3); halfW = 7.5; deep = true; break;
+    case 'third': depth = 13; y = W / 2 + side * (W / 3); halfW = side ? 7.5 : 10; deep = true; break; // the middle third owns posts and seams
     case 'quarter': depth = 11; y = W / 2 + side * 13; halfW = 7; deep = true; break;
     case 'curl': depth = 7; y = ballY + side * 9; halfW = 6; break;
     case 'hook': depth = 7; y = ballY + side * 4; halfW = 5.5; break;
@@ -202,7 +202,7 @@ function setupOffense(S) {
     // the back must be able to reach the mesh from behind
     if (rb.x > S.mesh.x - 0.5 && play.carrier !== 'QB') S.mesh.x = rb.x + 0.8;
   }
-  if (play.screen) for (const k of ['LG', 'C', 'RG']) O[k].screenRelease = 1.1;
+  if (play.screen) for (const k of ['LG', 'C', 'RG']) O[k].screenRelease = 1.0;
 }
 
 function assignRunBlocks(S) {
@@ -311,6 +311,17 @@ function tick(S) {
   if (S.ball.state === 'air') updateBallFlight(S);
   if (S.ball.state === 'loose') updateLooseBall(S);
   if (S.result) return;
+
+  // screen: the linemen let their rushers through and release to lead block
+  if (S.play.screen && !S.screenReleased && S.t >= 1.0) {
+    S.screenReleased = true;
+    for (const k of ['LG', 'C', 'RG']) {
+      const p = O[k].engaged;
+      if (!p) continue;
+      breakPair(S, p);
+      p.d.noEngageFrom = O[k]; p.d.noEngageUntil = S.t + 3;
+    }
+  }
 
   // --- offense
   qbLogic(S);
@@ -479,13 +490,6 @@ function qbLogic(S) {
     return;
   }
 
-  // current read (advance faster when the read is blanketed)
-  let idx = Math.floor(since / readTime);
-  const scanning = idx >= prog.length;
-  idx = Math.min(idx, prog.length - 1);
-  st.readIdx = idx;
-  S.currentRead = prog[idx] ? prog[idx].idx : -1;
-
   // motion before the snap tipped the coverage: a cleaner read
   const noise = (100 - qb.r.awr) * 0.02 * (S.coverageTipped === 'man' ? 0.55 : S.coverageTipped === 'zone' ? 0.75 : 1);
   const perceive = (rec) => {
@@ -495,25 +499,63 @@ function qbLogic(S) {
     if (nd && nd.mods.misread && nds < 6) op += nd.mods.misread * 14; // looks open, isn't
     return op;
   };
+  // timing: a route can't be thrown until the receiver reaches his break
+  const atBreak = (rec) => {
+    const R = rec.route;
+    return rec.wp >= (R.settle ? Math.max(0, R.pts.length - 1) : Math.min(1, R.pts.length - 1));
+  };
+
+  // Progression: the designed reads in order, then a look back to the WR1, then the checkdown.
+  // The QB stays on a read until its route has had time to break (or it's plainly covered).
+  if (!st.order) {
+    const check = (e) => e.pos === 'RB' || (e.pos === 'FX' && S.pers === 'RB');
+    const isCheck = (e, i) => i > 0 && check(e) && e.route.depth === 'short';
+    const main = prog.filter((e, i) => !isCheck(e, i)), checks = prog.filter((e, i) => isCheck(e, i));
+    const wr = O.WR?.role === 'route' ? O.WR : null;
+    st.order = [...main, ...(wr && main.length > 1 && main[main.length - 1] !== wr ? [wr] : []), ...checks];
+    st.checks = new Set(checks);
+    st.readIdx = 0; st.readStart = 0;
+  }
+  const order = st.order;
+  const cur = order[st.readIdx];
+  if (cur) {
+    const onRead = since - st.readStart;
+    const lookBack = st.readIdx > 0 && order.indexOf(cur) < st.readIdx; // second look at the WR1
+    const need = lookBack ? readTime * 0.7 : readTime;
+    const done = onRead >= need && (atBreak(cur) || onRead >= need + 0.9 || perceive(cur) < -1.2);
+    if (done) { st.readIdx++; st.readStart = since; }
+  }
+  const scanning = st.readIdx >= order.length;
+  const idx = Math.min(st.readIdx, order.length - 1);
+  S.currentRead = order[idx] ? order[idx].idx : -1;
+
   let thrBase = 2.75 - since * 0.4 - aggression * 0.45 - (pressured ? (nearest < 1.7 ? 0.8 : 0.4) : 0);
   if (S.situation.desperate) thrBase -= 0.8;
 
-  const candidates = scanning ? prog : [prog[idx]];
-  // hot read vs blitz
-  if (pressured && since < 1.2 && rushers.length > 2) {
-    const hot = prog.slice().sort((a, b) => (a.route.depth === 'short' ? 0 : 1) - (b.route.depth === 'short' ? 0 : 1))[0];
-    if (hot && !candidates.includes(hot)) candidates.push(hot);
+  const candidates = scanning ? prog : [order[idx]];
+  // hot read vs blitz: a QB who read the blitz before the snap knows he's hot and gets it out
+  // to his quickest route right away; otherwise only once he feels the free rusher
+  if (st.hotKnown == null) st.hotKnown = S.dcall.tags.includes('blitz') && S.rng.chance(clamp(qb.r.awr / 110, 0.3, 0.9));
+  let hot = null;
+  if ((pressured && rushers.length > 2) || st.hotKnown) {
+    if (since < 1.2) {
+      // quickest route: short before deeper, a receiver's quick route before the back's flat
+      const rank = (e) => (e.route.depth === 'short' ? 0 : 2) + (st.checks.has(e) ? 1 : 0);
+      hot = prog.slice().sort((a, b) => rank(a) - rank(b))[0];
+      if (hot && !candidates.includes(hot)) candidates.push(hot);
+    }
   }
   let best = null, bestOp = -Infinity;
   for (const rec of candidates) {
     if (!rec || rec.route.delay > t) continue;
-    // timing: don't throw a route until the receiver reaches his break
-    const R = rec.route;
-    const readyWp = R.settle ? Math.max(0, R.pts.length - 1) : Math.min(1, R.pts.length - 1);
-    if (rec.wp < readyWp && !(pressured && since > 0.5)) continue;
+    if (!atBreak(rec) && !(pressured && since > 0.5)) continue;
     const op = perceive(rec);
     const depthAdj = rec.route.depth === 'deep' ? 0.35 - (S.situation.deepBias || 0) * 0.6 : rec.route.depth === 'medium' ? 0.1 : 0;
     let score = op - depthAdj;
+    // once he's scanning: the WR1 is his go-to, the checkdown is the last resort
+    if (scanning && rec === O.WR) score += 0.25;
+    if (st.checks.has(rec) && !(pressured && nearest < 2) && rec !== hot) score -= scanning ? 0.35 : 0.15;
+    if (rec === hot && st.hotKnown) score += 0.7; // he's throwing hot: take the quick completion
     // 3rd/4th down: a completion short of the sticks is worth much less
     const sit = S.situation;
     if (sit.down >= 3 && sit.toGo > 1 && since < 2.6) {
@@ -657,7 +699,7 @@ function openness(S, rec, qb) {
   for (const d of S.ents) {
     if (d.side !== 'D') continue;
     if (d.role === 'rush' && !(S.t > 1.5 && dist(d, qb) > 4)) continue;
-    const reach = d.maxSpd * Math.max(0, T - d.react) * 0.8;
+    const reach = d.maxSpd * Math.max(0, T - d.react) * (T > 1.8 ? 0.92 : 0.8); // on long throws defenders get there
     sep = Math.min(sep, dist(d, P) - reach - 0.4);
     // throwing lane
     const u = clamp(((d.x - qb.x) * segx + (d.y - qb.y) * segy) / segL2, 0, 1);
@@ -695,20 +737,22 @@ function releaseThrow(S, rec, { hail = false, pressured = false } = {}) {
     P.y += ((P.y - nd.y) / (nds || 1)) * k;
   }
   // inaccuracy
-  let sigma = 0.1 + (100 - qb.r.acc) * 0.01 + d * 0.01;
+  // deep balls are much harder to place: error grows quickly past ~15 yards of flight
+  let sigma = 0.1 + (100 - qb.r.acc) * 0.01 + d * 0.01 + Math.max(0, d - 15) * (0.045 - qb.r.acc * 0.0002);
   if (pressured) sigma *= 1.45;
   // hit as he throws
   const inFace = S.ents.some((d) => d.side === 'D' && !d.engaged && dist(d, qb) < 1.4);
   if (inFace) { sigma *= 1.8; if (!pressured) pressured = true; }
   if (S.qb.onRun || S.scramble) sigma *= 1.25;
   const ux = (P.x - qb.x) / (d || 1), uy = (P.y - qb.y) / (d || 1);
+  const aimX = P.x, aimY = P.y;
   const along = S.rng.gauss(0, sigma * 1.1), lat = S.rng.gauss(0, sigma);
   P.x += ux * along - uy * lat;
   P.y += uy * along + ux * lat;
 
   S.thrown = true;
   S.ball.state = 'air';
-  S.ball.flight = { fx: qb.x, fy: qb.y, tx: P.x, ty: P.y, t0: S.t, T, target: rec, peak: clamp(d * 0.13, 0.8, 9), hail };
+  S.ball.flight = { fx: qb.x, fy: qb.y, tx: P.x, ty: P.y, t0: S.t, T, target: rec, peak: clamp(d * 0.13, 0.8, 9), hail, off: hyp(P.x - aimX, P.y - aimY) };
   qb.hasBall = false;
   S.passInfo = { target: rec, airYards: P.x - S.los, throwX: qb.x, throwY: qb.y, pressured, T, t: S.t, pressure: S.pressure };
   S.currentRead = rec.idx;
@@ -801,7 +845,8 @@ function resolveCatch(S) {
   if (recIn && defIn) {
     const hand = rec.r.hands * 0.7 + rec.r.str * 0.3, cov = bestD.r.cover * 0.4 + bestD.r.ball * 0.3 + bestD.r.press * 0.3;
     const edge = (dd - dr) * 0.35;
-    const pCatch = clamp(0.5 + (hand - cov) * 0.007 + edge + (rec.height - bestD.height) * 0.08, 0.15, 0.85);
+    const deepBall = hyp(f.tx - f.fx, f.ty - f.fy) > 22; // tracking a long ball over your shoulder with a DB on you
+    const pCatch = clamp((deepBall ? 0.4 : 0.5) + (hand - cov) * 0.007 + edge + (rec.height - bestD.height) * 0.08, 0.15, 0.85);
     const pInt = clamp(0.1 + (bestD.r.ball - 60) * 0.003 - edge * 0.3, 0.02, 0.3);
     const roll = S.rng.next();
     if (dd < dr - 0.4 && S.rng.chance(0.07 * (1 - (bestD.mods.discipline || 0)))) return endPlay(S, { type: 'dpi', defender: bestD, spot: L.x });
@@ -811,9 +856,12 @@ function resolveCatch(S) {
     event(S, `Broken up by ${bestD.pl.name}.`);
     return endPlay(S, { type: 'incomplete', pbu: bestD });
   }
+  // a long ball he had to adjust to (off target) is much harder to track and haul in
+  const longBall = hyp(f.tx - f.fx, f.ty - f.fy) > 22;
+  const tracking = longBall ? clamp(((f.off || 0) - 0.8) * (0.2 - rec.r.hands * 0.0012), 0, 0.45) : 0;
   if (recIn) {
     const stretch = dr / Rc;
-    const pCatch = clamp(0.84 + rec.r.hands * 0.0013 - stretch * 0.1, 0.6, 0.985);
+    const pCatch = clamp(0.84 + rec.r.hands * 0.0013 - stretch * 0.1 - tracking, 0.35, 0.985);
     if (S.rng.chance(pCatch)) return catchMade(S, rec, false);
     event(S, `Dropped by ${rec.pl.name}!`);
     return endPlay(S, { type: 'incomplete', drop: true });
@@ -1111,7 +1159,8 @@ function defenseLogic(S, e) {
 
   // play-action bite
   if (S.play.pa && reader && e.role !== 'rush') {
-    const bite = clamp(0.25 + (100 - e.r.awr) * 0.012, 0.2, 0.95) * (deepDB ? 0.5 : 1);
+    // the fake only works if the defense has to respect the run (see runRespect in game.js)
+    const bite = clamp(0.25 + (100 - e.r.awr) * 0.012, 0.2, 0.95) * (deepDB ? 0.5 : 1) * (S.situation.runRespect ?? 1);
     if (t > 0.2 && t < 0.2 + bite) return steer(e, S.los + 1.5, e.y + (S.O.RB.y - e.y) * 0.3, 0.7, S);
   }
   return coverageLogic(S, e);
@@ -1150,7 +1199,9 @@ function coverageLogic(S, e) {
     case 'man': {
       const m = e.man;
       if (m.role === 'pblock' || m.role === 'runblock' || m.role === 'stalk') {
-        // my man stayed in: help underneath / read the QB
+        // my man stayed in: once it's clearly a pass, double the most dangerous route (under & inside it)
+        const r = S.play.type === 'pass' && t > 0.8 ? deepestRoute(S) : null;
+        if (r) return steer(e, r.x - 1.5, clamp(r.y + Math.sign(S.ballY - r.y) * 1.5, 1, S.W - 1), 1, S);
         return steer(e, S.los + 5, clamp(qb.y + (e.y0 - qb.y) * 0.4, 1, S.W - 1), 0.6, S);
       }
       return manCover(S, e, m);
@@ -1158,6 +1209,12 @@ function coverageLogic(S, e) {
     case 'zone': return zoneCover(S, e);
     default: steer(e, e.x, e.y, 0.2, S);
   }
+}
+
+function deepestRoute(S) {
+  let best = null;
+  for (const r of [S.O.WR, S.O.FX, S.O.RB]) if ((r.role === 'route' || r.role === 'target') && (!best || r.x > best.x)) best = r;
+  return best && best.x > S.los + 5 ? best : null;
 }
 
 function manCover(S, e, m) {
@@ -1220,10 +1277,16 @@ function zoneCover(S, e) {
     const k = clamp((e.r.awr - 40) / 100, 0, 0.6);
     ty += clamp((readE.y - z.y) * k, -z.halfW, z.halfW);
   }
+  // underneath defender with nobody in his zone: sink under the deepest route instead of guarding grass
+  if (!threat && !dropping && !z.deep && S.play.type === 'pass') {
+    const r = deepestRoute(S);
+    if (r) { tx = Math.min(r.x - 2, z.x + 7); ty = z.y + clamp(r.y - z.y, -z.halfW - 2, z.halfW + 2); }
+  }
   if (threat && !dropping) {
     if (z.deep) {
-      // stay on top of the deepest threat
-      tx = Math.max(z.x - 1, threat.x + 3.5);
+      // stay on top of the deepest threat: open the hips and run with him before he's even
+      // (lead by his speed), instead of waiting flat-footed until he's past
+      tx = Math.max(z.x - 1, threat.x + 3.5 + Math.max(0, threat.vx) * 0.45);
       ty = z.y + clamp(threat.y - z.y, -z.halfW - 1, z.halfW + 1);
     } else {
       // undercut: sit between QB and receiver
@@ -1234,7 +1297,9 @@ function zoneCover(S, e) {
     }
   }
   tx = Math.min(tx, 109.5);
-  steer(e, tx, clamp(ty, 0.8, S.W - 0.8), dropping ? 0.95 : 0.85, S);
+  // a deep defender carrying a vertical threat runs flat out
+  const racing = z.deep && threat && threat.x > e.x - 4;
+  steer(e, tx, clamp(ty, 0.8, S.W - 0.8), racing ? 1 : dropping ? 0.95 : 0.85, S);
 }
 
 // Edge contain: the outermost second-level defender on the side the runner is
@@ -1331,7 +1396,9 @@ function engage(S, blk, def, kind) {
   contact(S, blk, def);
   const p = { a: blk, d: def, kind, t0: S.t, diff, cx: (blk.x + def.x) / 2, cy: (blk.y + def.y) / 2 };
   // pass rush 'quick win': a rep can be lost at the snap (speed rush, swim, bull)
-  if (kind === 'pass' && S.rng.chance(clamp(0.25 + diff * 0.009 + (def.r.rushFin - 60) * 0.004, 0.06, 0.5))) p.winAt = S.t + S.rng.range(0.35, 1.3);
+  // rushers who know a pass is coming (pass-only offense, 3rd & long) pin their ears back
+  const tee = ((S.situation.passExpect ?? 0.55) - 0.55) * 0.35;
+  if (kind === 'pass' && S.rng.chance(clamp(0.25 + diff * 0.009 + (def.r.rushFin - 60) * 0.004 + tee, 0.06, 0.55))) p.winAt = S.t + S.rng.range(0.35, 1.3);
   blk.engaged = def.engaged = p;
   S.pairs.push(p);
 }

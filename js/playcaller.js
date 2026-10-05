@@ -20,9 +20,31 @@ export function passProbability(coach, sit) {
   else if (sit.quarter >= 3 && sit.diff <= -9) { p += 0.2; why.push(`trailing by ${-sit.diff}`); }
   if (sit.killClock) { p -= 0.4; why.push('protecting the lead'); }
   else if (sit.quarter === 4 && sit.diff >= 8) { p -= 0.2; why.push('ahead late'); }
+  else if (sit.milk) { p -= 0.1; why.push('ahead in the 4th: shorten the game'); }
+  if (sit.hurryLate) { p += 0.15; why.push(`down ${-sit.diff} with ${Math.ceil(sit.secsGame / 60)} minutes left`); }
   if (sit.ballOn >= 97 && toGo <= 3) { p -= 0.15; why.push('goal line'); }
   return { p: clamp(p, 0.06, 0.96), why };
 }
+
+// Play families the offense keeps score on during a game.
+export function familyOf(p) {
+  if (p.type !== 'pass') return 'run';
+  return p.screen ? 'screen' : p.pa ? 'pa' : p.drop === 'quick' ? 'quick' : p.depth;
+}
+
+// In-game learning: how a family / call has done this game against the average, as a weight
+// multiplier. Shrunk toward the average until there's evidence. sign -1 = fewer yards is better.
+function learned(log, key, sign = 1) {
+  if (!log) return 1;
+  let n = 0, y = 0;
+  for (const k in log) { n += log[k].n; y += log[k].yds; }
+  const e = log[key];
+  if (n < 8 || !e) return 1;
+  const avg = y / n, mine = (e.yds + avg * 3) / (e.n + 3);
+  return clamp(Math.exp(sign * (mine - avg) / 3.5), 0.35, 1.9);
+}
+const MAN_BEATERS = new Set(['mesh', 'slants', 'yCross', 'drive', 'fade']);
+const ZONE_BEATERS = new Set(['smash', 'curlFlat', 'flood', 'stick', 'dagger', 'hitchSeam']);
 
 function ord(n) { return ['1st', '2nd', '3rd', '4th'][n - 1] || `${n}th`; }
 
@@ -32,7 +54,12 @@ export function callOffense(team, sit, rng) {
 
   // --- clock specials
   if (sit.kneel) return { play: KNEEL, reason: 'Victory formation — kneel to run out the clock' };
-  if (sit.spike) return { play: SPIKE, reason: 'No timeouts — spike to stop the clock' };
+  if (sit.spike) return { play: SPIKE, reason: 'Spike it to stop the clock' };
+  // in field-goal range with a kick all we need: safe inside runs, stay in bounds, keep the clock moving
+  if (sit.drain) {
+    const safe = PLAYS.filter((p) => p.type === 'run' && !p.special && p.forms[sit.personnel || 'WR'] && p.carrier !== 'QB' && ['insideZone', 'gunZone', 'power', 'iso', 'fbDive'].includes(p.id));
+    if (safe.length) return { play: rng.pick(safe), reason: 'In field-goal range: run the clock down, then kick', pPass: 0 };
+  }
 
   let { p: pPass, why } = passProbability(coach, sit);
   // in-game adjustment: lean into what's working (needs a few plays of evidence)
@@ -43,6 +70,15 @@ export function callOffense(team, sit, rng) {
       const shift = clamp(edge * 0.12, -0.15, 0.15);
       pPass = clamp(pPass + shift, 0.06, 0.96);
       why.push(shift > 0 ? `passing game rolling (${adj.passYpa.toFixed(1)} per attempt)` : `run game working (${adj.runYpc.toFixed(1)} per carry)`);
+    }
+  }
+  // a defense that blitzes all game is selling out vs the run: throw it (hot / quick game) more
+  const D = adj.oppD;
+  if (D && D.plays >= 8 && !sit.killClock && !sit.drain) {
+    const blitzy = D.blitz / D.plays;
+    if (blitzy >= 0.35) {
+      pPass = clamp(pPass + (blitzy - 0.3) * 0.6, 0.06, 0.96);
+      why.push(`they're blitzing ${pct(blitzy)} of snaps`);
     }
   }
   const hail = sit.secsHalf <= 7 && ballOn >= 35 && ballOn <= 72 && (sit.quarter === 2 || sit.diff < 0 && sit.diff >= -8 || sit.quarter === 2);
@@ -61,7 +97,8 @@ export function callOffense(team, sit, rng) {
       w *= dw[p.depth];
       if (p.depth === 'deep') w *= 0.5 + coach.deepRate;
       if (p.depth === 'short') w *= 1.5 - coach.deepRate;
-      if (p.pa) w *= down <= 2 && !sit.twoMinute ? coach.paRate * 3 : 0.25;
+      // play action only sells if we actually run the ball: a pass-only team gets little out of it
+      if (p.pa) w *= (down <= 2 && !sit.twoMinute ? coach.paRate * 3 : 0.25) * clamp((sit.runShare ?? 0.45) / 0.4, 0.15, 1.15);
       if (p.id === 'fade') w *= ballOn >= 88 ? 3 : 0;
       if (ballOn >= 85 && p.depth === 'deep' && p.id !== 'fade') w *= 0.5;
       if (sit.twoMinute && p.tags?.includes('sideline')) w *= 2.5;
@@ -82,6 +119,20 @@ export function callOffense(team, sit, rng) {
       if (p.id === 'outsideZone' || p.id === 'toss') w *= toGo <= 2 ? 0.5 : 1;
     }
     if (p.id === sit.lastPlayId) w *= 0.4;
+    // what's working against this defense, and what it keeps showing us
+    w *= learned(adj.offLog, familyOf(p));
+    if (D && D.plays >= 8) {
+      const blitzy = D.blitz / D.plays, manny = D.man / D.plays;
+      if (blitzy >= 0.35) {
+        const k = 1 + (blitzy - 0.3) * 2.5; // beat pressure: get it out fast, screen it, draw it
+        if (p.drop === 'quick' || p.screen || p.scheme === 'draw') w *= k;
+        if (p.pa) w /= k;
+        // man blitz leaves the deep ball one-on-one with no safety: take shots; vs zone blitz, don't hold it
+        if (p.drop === 'deep') w *= manny >= 0.5 ? k : 1 / k;
+      }
+      if (manny >= 0.6 && MAN_BEATERS.has(p.id)) w *= 1 + (manny - 0.5) * 1.4;
+      if (manny <= 0.35 && ZONE_BEATERS.has(p.id)) w *= 1.3;
+    }
     // feed the hot receiver: favor concepts where he's the first read
     if (adj.hotSlot && p.prog && p.prog[0] === adj.hotSlot) w *= 1.4;
     return { w, p };
@@ -131,6 +182,18 @@ export function callDefense(team, sit, oppTendency, rng) {
     if (sit.front === 'DB' && d.tags.includes('zone')) w *= 1.15;
     if (sit.front === 'LB' && d.id === 'runBlitz') w *= 1.3;
     if (sit.twoMinute && d.id === 'c4') w *= 1.6;
+    // what's been working against this offense, and what it keeps doing
+    w *= learned(oppTendency.defLog, d.id, -1);
+    if (oppTendency.plays >= 8) {
+      const passy = oppTendency.pass / oppTendency.plays, deepy = oppTendency.deep / Math.max(1, oppTendency.pass);
+      if (passy >= 0.72 && d.id === 'runBlitz') w *= 0.3;
+      // shot-happy offense: get more defenders deep (Cover 4, Cover 3); not Cloud, no Cover 0
+      if (deepy >= 0.22) {
+        const k = 1 + (deepy - 0.15) * 3;
+        if (d.id === 'c4') w *= k; else if (d.id === 'c3') w *= 1 + (k - 1) * 0.6;
+        if (d.id === 'cloud' || d.id === 'c0') w /= k;
+      }
+    }
     return { w, d };
   });
   const pick = rng.weighted(cands).d;

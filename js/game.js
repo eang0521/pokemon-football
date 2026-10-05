@@ -5,7 +5,7 @@ import { TeamDepth } from './depth.js';
 import { simulatePlay, simulateReturn } from './sim/playSim.js';
 import { PLAYS, FORMATIONS } from './playbook.js';
 import { specialFrames } from './sim/special.js';
-import { callOffense, callDefense, fourthDown, patDecision, KNEEL, SPIKE } from './playcaller.js';
+import { callOffense, callDefense, fourthDown, patDecision, familyOf, KNEEL, SPIKE } from './playcaller.js';
 
 export const FIELD_W = 40;
 export const QUARTER_SECS = 360;
@@ -37,7 +37,10 @@ export class Game {
     this.depth.forEach((d, i) => { for (const c of d.all()) this.teamOf[c.id] = i; });
     this.stats = { players: {}, teams: [blankTeam(), blankTeam()] };
     for (const id in this.players) this.stats.players[id] = blankLine();
-    this.tendency = [{ plays: 0, pass: 0 }, { plays: 0, pass: 0 }];
+    this.tendency = [{ plays: 0, pass: 0, deep: 0 }, { plays: 0, pass: 0, deep: 0 }];
+    // in-game learning: yards per offensive play family / per defensive call, and the looks each defense shows
+    this.callLog = [{ off: {}, def: {} }, { off: {}, def: {} }];
+    this.dTend = [{ plays: 0, blitz: 0, man: 0 }, { plays: 0, blitz: 0, man: 0 }];
     this.recent = [{ runs: [], passes: [], recYds: {} }, { runs: [], passes: [], recYds: {} }];
     this.score = [0, 0];
     this.quarterScores = [[0, 0, 0, 0], [0, 0, 0, 0]];
@@ -81,13 +84,27 @@ export class Game {
     const diff = this.score[i] - this.score[1 - i];
     const q = this.quarter;
     const secsHalf = this.secsHalf(), secsGame = this.secsGame();
-    const twoMinute = (q === 2 && secsHalf <= 120) || (q >= 4 && secsGame <= 150 && diff <= 0) || (q >= 4 && secsGame <= 330 && diff < -8);
-    const killClock = q >= 4 && diff > 0 && secsGame <= 330;
+    const late = q >= 4;
+    // the seconds that matter right now: to halftime in the 2nd quarter, to the end late in the game
+    const secsLeft = q === 2 ? secsHalf : late ? secsGame : Infinity;
+    // can a trailing team still catch up? (about one score per 75 seconds left, 8 points each)
+    const reachable = diff >= -8 || -diff <= 8 * (1 + Math.floor(secsGame / 75));
+    const twoMinute = (q === 2 && secsHalf <= 120) || (late && secsGame <= 150 && diff <= 0 && reachable) || (late && secsGame <= 330 && diff < -8 && reachable);
+    const killClock = late && diff > 0 && secsGame <= 330;
+    // a field goal is all we need (end of the half; tied or down 3 or less late; OT): if we're
+    // comfortably in range and can bleed the clock with the downs left, run it down, then kick
+    const K = this.depth[i].K;
+    const fgOK = 100 - this.ballOn + 17 <= 41 + K.ratings.kpow * 0.15 - 4;
+    const fgEnough = q === 2 || q === 5 || (q === 4 && diff <= 0 && diff >= -3);
+    const drain = this.phase === 'scrimmage' && fgEnough && fgOK && secsLeft > 4 && secsLeft <= (4 - this.down) * 38 + 8;
+    const milk = late && diff > 0 && secsGame <= 600 && !killClock; // ahead in the 4th: shorten the game
+    const hurryLate = late && diff < 0 && reachable && secsGame <= 480 && !twoMinute;
     return {
       down: this.down, toGo: this.toGo, ballOn: this.ballOn, quarter: q, clock: this.clock,
-      secsHalf, secsGame, diff, twoMinute, killClock,
+      secsHalf, secsGame, secsLeft, diff, twoMinute, killClock, drain, milk, hurryLate, reachable,
       timeouts: this.timeouts[i], oppTimeouts: this.timeouts[1 - i],
       lastPlayId: this.lastPlayId, offQB: this.depth[i].QB, adjust: this.scouting(i),
+      runShare: this.runShare(i),
       personnel: this.depth[i].personnel, front: this.depth[1 - i].front,
     };
   }
@@ -116,13 +133,14 @@ export class Game {
     if (this.final) return null;
     this.curRecId = (this.recSeq = (this.recSeq || 0) + 1);
     const before = this.snapshot();
+    this.preSnapState = before; // doScrimmage replaces this once the between-plays runoff is applied
     let rec;
     if (this.phase === 'kickoff') rec = this.doKickoff();
     else if (this.phase === 'pat') rec = this.doPAT();
     else rec = this.doScrimmage();
     if (!rec) return this.next();
     rec.id = this.curRecId;
-    rec.before = rec.before || before;
+    rec.before = rec.before || this.preSnapState || before;
     if (rec.type !== 'penalty' && rec.cast) this.applyFatigue(rec);
     rec.notes = [...(rec.notes || []), ...this.notes];
     this.notes = [];
@@ -185,7 +203,8 @@ export class Game {
   scouting(i) {
     const R = this.recent[i];
     const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
-    const out = { ...this.tendency[i], runN: R.runs.length, passN: R.passes.length, runYpc: avg(R.runs), passYpa: avg(R.passes) };
+    const out = { ...this.tendency[i], runN: R.runs.length, passN: R.passes.length, runYpc: avg(R.runs), passYpa: avg(R.passes),
+      offLog: this.callLog[i].off, defLog: this.callLog[1 - i].def, oppD: this.dTend[1 - i] };
     // hot receiver: 60+ yards and clearly ahead of teammates, currently on the field
     const onField = this.depth[i].onField;
     const slotOf = { WR: 'WR', FXO: 'FX', RB: 'RB' };
@@ -255,23 +274,50 @@ export class Game {
   }
 
   // ------------------------------------------------------------------------
-  // Clock between plays (runoff, timeouts, two-minute warning)
+  // Clock between plays: runoff, timeouts, spikes, draining for a kick (two-minute warning in applyRunoff).
   preSnapClock(sit) {
-    const i = this.poss;
+    const i = this.poss, d = 1 - i, q = this.quarter;
     const coach = this.teams[i].coach;
+    const TO = this.timeouts[i], left = sit.secsLeft;
+    const r = (a, b) => this.rng.range(a, b);
+    this.kickNow = false; this.wantSpike = false;
     if (!this.clockRunning) return;
-    // timeouts
-    const defIdx = 1 - i;
-    const offWantsTO = this.timeouts[i] > 0 && sit.secsHalf <= 110 && sit.secsHalf > 3 &&
-      ((this.quarter === 2 && this.ballOn >= 30) || (this.quarter >= 4 && sit.diff <= 0));
-    const defWantsTO = this.timeouts[defIdx] > 0 && this.quarter >= 4 && sit.secsGame <= 170 && sit.diff >= 0 && sit.diff <= 16;
-    if (offWantsTO) { this.useTimeout(i, 2); return; }
-    if (defWantsTO) { this.useTimeout(defIdx, 2); return; }
+
+    // trailing defense: stop the clock while the leader runs it out (or drains it for a kick)
+    const lead = sit.diff;
+    if (this.timeouts[d] > 0 && q >= 4 && sit.secsGame <= 200 && (sit.killClock || sit.drain) && lead >= 0 && lead <= 16) {
+      this.useTimeout(d, r(1, 3)); return;
+    }
+
+    // a field goal is enough: bleed the clock, then use a timeout (or hurry the kicking unit on) and kick
+    if (sit.drain) {
+      const runoff = Math.min(37 + r(0, 2), left - 5);
+      if (TO > 0 && left - runoff <= 7) {
+        this.applyRunoff(Math.max(0, left - 3 - r(0, 2)));
+        if (this.clockRunning) this.useTimeout(i, 0);
+        this.kickNow = true; return;
+      }
+      if (TO === 0 && left <= 45) { this.applyRunoff(clamp(left - 4, 0, 12)); this.kickNow = true; return; }
+      this.applyRunoff(Math.max(0, runoff)); return;
+    }
+
+    // two-minute offense: save timeouts until the clock is actually short; spike when out of them
+    const needs = q === 2 ? (this.ballOn >= 25 || left > 45) : sit.diff <= 0 && sit.reachable;
+    if (sit.twoMinute && needs && left > 3 && this.down < 4) { // (no timeout just to punt on 4th down)
+      if (TO === 0 || (TO === 1 && this.down === 1 && left <= 45 && left > 15)) {
+        // line up and spike it (keeping the last timeout when we can)
+        if (left <= 45 && this.down < 3) { this.applyRunoff(5 + r(0, 3)); this.wantSpike = true; return; }
+      } else if (left <= 30 + 20 * (TO - 1)) { this.useTimeout(i, r(1, 3)); return; }
+    }
 
     let runoff;
-    if (sit.killClock) runoff = 36 + this.rng.range(0, 3);
-    else if (sit.twoMinute) runoff = 9 + this.rng.range(0, 5);
-    else runoff = { hurry: 14, normal: 25, slow: 31 }[coach.tempo] + this.rng.range(-4, 4);
+    if (sit.killClock) runoff = 36 + r(0, 3);
+    else if (sit.twoMinute) runoff = 9 + r(0, 5);
+    else if (sit.hurryLate) runoff = 13 + r(0, 4);
+    else {
+      runoff = { hurry: 14, normal: 25, slow: 31 }[coach.tempo] + r(-4, 4);
+      if (sit.milk) runoff = Math.max(runoff, 31 + r(0, 5));
+    }
     if (this.oobRestart) runoff = Math.max(5, runoff - 14);
     this.applyRunoff(runoff);
   }
@@ -342,6 +388,7 @@ export class Game {
     this.preSnapClock(sit);
     if (this.clock <= 0) { this.clock = 0; this.checkQuarterEnd(); return null; }
     if (this.pendingWarning) { this.pendingWarning = false; this.note('Two-minute warning.', 'period'); }
+    this.preSnapState = this.snapshot(); // the clock as the ball is snapped
     for (const n of this.depth[i].substitute('O')) this.note(`Sub (${team.abbr}): ${n}`, 'sub');
     for (const n of this.depth[d].substitute('D')) this.note(`Sub (${dteam.abbr}): ${n}`, 'sub');
     sit = this.situation();
@@ -349,9 +396,11 @@ export class Game {
     // clock-management specials
     const remDowns = 4 - this.down;
     const kneelable = sit.killClock && sit.secsGame <= (remDowns + 1) * 2 + Math.max(0, remDowns - sit.oppTimeouts) * 40;
-    const halfKneel = this.quarter === 2 && sit.secsHalf <= 22 && this.ballOn < 55 && sit.diff >= 0 && this.down < 4;
-    sit.kneel = (kneelable && this.down < 4) || (halfKneel && this.clockRunning);
-    sit.spike = !sit.kneel && sit.twoMinute && this.clockRunning && this.timeouts[i] === 0 && sit.secsHalf <= 40 && sit.secsHalf > 4 && this.down < 3;
+    // end of the half with nowhere to go: take a knee
+    const halfKneel = this.quarter === 2 && this.down < 4 &&
+      ((sit.secsHalf <= 22 && this.ballOn < 55 && sit.diff >= 0) || (sit.secsHalf <= 30 && this.ballOn < 30));
+    sit.kneel = (kneelable && this.down < 4) || halfKneel;
+    sit.spike = !sit.kneel && this.wantSpike;
     if (sit.kneel) return this.doKneel(sit);
     if (sit.spike) return this.doSpike(sit);
 
@@ -359,6 +408,7 @@ export class Game {
     const K = this.depth[i].K;
     const fgDist = 100 - this.ballOn + 17;
     const inRange = fgDist <= 41 + K.ratings.kpow * 0.15;
+    if (this.kickNow && inRange) return this.doFieldGoal('Clock drained, now kick it');
     const needFGNow = inRange && sit.secsHalf <= 6 && (this.quarter === 2 || (sit.diff <= 0 && sit.diff >= -3) || this.quarter === 5);
     if (needFGNow) return this.doFieldGoal('Time for one last kick');
     if (this.down === 4) {
@@ -404,9 +454,34 @@ export class Game {
         down: this.down, toGo: this.toGo,
         desperate: sit.secsGame <= 20 && sit.diff < 0 && this.quarter >= 4,
         wantOOB: sit.twoMinute && (this.quarter === 2 || sit.diff <= 0),
-        protect: sit.killClock, // leading late: stay in bounds, keep the clock running
+        protect: sit.killClock || sit.drain, // stay in bounds, keep the clock running
+        runRespect: this.runRespect(i, sit),
+        passExpect: this.passExpect(i, sit),
       },
     };
+  }
+
+  // How much the defense has to respect the run, 0..~1.1: play action only fools them if this
+  // offense actually runs (this game, or its coach's tendency early on), and not on obvious passing downs.
+  runShare(i) {
+    const T = this.tendency[i];
+    return T.plays >= 6 ? 1 - T.pass / T.plays : 1 - this.teams[i].coach.passRate;
+  }
+  runRespect(i, sit) {
+    let r = clamp((this.runShare(i) - 0.12) / 0.33, 0, 1.1);
+    if (this.down >= 3 && this.toGo >= 6) r *= 0.35;
+    else if (this.down === 2 && this.toGo >= 9) r *= 0.75;
+    if (sit.twoMinute) r *= 0.3;
+    return r;
+  }
+
+  // How sure the defense is that a pass is coming, 0..1: this offense's pass rate, plus the situation.
+  passExpect(i, sit) {
+    let p = 1 - this.runShare(i);
+    if (this.down >= 3 && this.toGo >= 6) p += 0.25;
+    if (sit.twoMinute) p += 0.25;
+    if (this.toGo <= 2) p -= 0.2;
+    return clamp(p, 0, 1);
   }
 
   // QB audible: read the defense's look (blitz, loaded box, soft shell) and check out.
@@ -425,7 +500,9 @@ export class Game {
       if (p) return { play: p, why: `${qb.name} sees the loaded box and checks to ${p.name}` };
     }
     // pass vs the blitz -> hot/quick game
-    if (oc.play.type === 'pass' && blitzLook && oc.play.drop !== 'quick' && this.rng.chance(vision / 170)) {
+    // a defense that's been blitzing all game has the QB primed to check out of it
+    const DT = this.dTend[1 - i], blitzy = DT.plays >= 6 ? DT.blitz / DT.plays : 0;
+    if (oc.play.type === 'pass' && blitzLook && oc.play.drop !== 'quick' && this.rng.chance((vision / 170) * (1 + blitzy * 1.6))) {
       const p = pickPlay(['slants', 'quickOuts', 'stick', 'rbScreen']);
       if (p) return { play: p, why: `${qb.name} spots the blitz and checks to ${p.name}` };
     }
@@ -465,8 +542,18 @@ export class Game {
     this.lastPlayId = oc.play.id;
     this.tendency[i].plays++;
     if (oc.play.type === 'pass') this.tendency[i].pass++;
+    if (oc.play.type === 'pass' && oc.play.depth === 'deep') this.tendency[i].deep++;
+    const DT = this.dTend[d];
+    DT.plays++;
+    if (dc.dcall.tags.includes('blitz')) DT.blitz++;
+    if (dc.dcall.tags.includes('man')) DT.man++;
     if (twoPoint) return this.applyTwoPoint(res, rec);
     this.applyScrimmage(res, rec, sit);
+    if (rec.gain != null && !oc.play.special) {
+      const y = res.turnover ? -25 : rec.gain;
+      const fo = (this.callLog[i].off[familyOf(oc.play)] ||= { n: 0, yds: 0 }); fo.n++; fo.yds += y;
+      const fd = (this.callLog[d].def[dc.dcall.id] ||= { n: 0, yds: 0 }); fd.n++; fd.yds += y;
+    }
     return rec;
   }
 
@@ -658,7 +745,8 @@ export class Game {
   }
 
   pushLog(rec, text, team) {
-    this.log.push({ q: rec.before?.q ?? this.quarter, clock: rec.before?.clock ?? this.clock, team, dd: rec.presnap?.dd, spot: rec.presnap?.spot, text, highlight: rec.highlight, score: [...this.score], recId: this.curRecId });
+    const at = rec.before || this.preSnapState;
+    this.log.push({ q: at?.q ?? this.quarter, clock: at?.clock ?? this.clock, team, dd: rec.presnap?.dd, spot: rec.presnap?.spot, text, highlight: rec.highlight, score: [...this.score], recId: this.curRecId });
   }
 
   quarterEndRecord() {
@@ -764,7 +852,7 @@ export class Game {
     this.clockRunning = false;
     const text = `${qb.name} spikes the ball to stop the clock.`;
     const rec = { type: 'spike', ...st, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: Math.min(los + sit.toGo, 100), events: [], text,
-      presnap: { dd, spot: this.yardText(los), offCall: SPIKE.name, defCall: '—', offReason: 'No timeouts left — stop the clock', defReason: '', offTeam: i } };
+      presnap: { dd, spot: this.yardText(los), offCall: SPIKE.name, defCall: '—', offReason: this.timeouts[i] ? 'Stop the clock and save the last timeout' : 'No timeouts left — stop the clock', defReason: '', offTeam: i } };
     this.pushLog(rec, text, i);
     return rec;
   }

@@ -55,7 +55,7 @@ export const ROUTES = {
   swing: { pts: [[-1, 4], [1, 9], [3, 12]], depth: 'short', settle: true },
   angle: { pts: [[2, 3], [5, -3], [6, -9]], depth: 'short', settle: true },
   checkFlat: { pts: [[2, 4], [4, 8]], depth: 'short', settle: true, delay: 0.9 },
-  screen: { pts: [[-2, 5], [-2.5, 7.5]], depth: 'short', settle: true, screen: true },
+  screen: { pts: [[0.5, 4.5], [1, 7.5]], depth: 'short', settle: true, screen: true },
   spot: { pts: [[7, -2]], depth: 'short', settle: true },
 };
 
