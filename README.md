@@ -10,6 +10,7 @@ A static, browser-only 7-on-7 tackle football simulation where every player is a
 - **Fatigue and substitutions.** HP is stamina; tired players rotate out for their backups.
 - **Injuries (optional).** Rare, exposure-based injuries knock a player out for the game; the backup steps in, or a bench player moves over out of position. You can turn them off on the matchup screen.
 - **Team builder.** Build a 23-card roster from all 1,025 Pokémon, then share it as a team code or link.
+- **Two camera angles.** The side-on broadcast view, or **All-14**: a Madden-style view from behind the offense, looking downfield in perspective, with the offense at the bottom and the defense on top. Switch under Camera, or press C.
 - **Replays and highlights.** Replay any play from the play-by-play, or watch a highlight reel of the game's biggest plays when it ends.
 - **Player cards.** Hover (or tap) any player on the field to see their card, ratings, and energy.
 - **Smooth playback.** The simulation runs in a Web Worker and prefetches upcoming plays, so the page stays responsive, even during "Sim to end".

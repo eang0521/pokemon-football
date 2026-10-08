@@ -172,7 +172,7 @@ const ctl = {
   game: null, client: null, renderer: null, playing: false, speed: store.get('speed', 1), stepOnce: false,
   cur: null, phase: 'idle', phaseT: 0, preDur: 0, playDur: 0, postDur: 0, lastRec: null, evIdx: 0,
   queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null,
-  opts: { design: store.get('design', true), reads: store.get('reads', true), names: store.get('names', false), sprites: store.get('sprites', 'home'), playcard: store.get('playcard', 'snap') },
+  opts: { design: store.get('design', true), reads: store.get('reads', true), names: store.get('names', false), sprites: store.get('sprites', 'home'), camera: store.get('camera', 'broadcast'), playcard: store.get('playcard', 'snap') },
 };
 
 function startGame(awayId, homeId, seed) {
@@ -210,6 +210,7 @@ function startGameWith(away, home, seed) {
     ctl.renderer = new FieldRenderer({ stage: $('#stage'), field: $('#field'), overlay: $('#overlay'), tokens: $('#tokens'), onPlayerHover: showPlayerCard });
   } else { ctl.renderer.tokens.clear(); ctl.renderer.lastScale = null; }
   ctl.renderer.spriteStyle = ctl.opts.sprites;
+  ctl.renderer.view = ctl.opts.camera;
   if (ctl.adventure) history.replaceState(null, '', `${location.pathname}#adventure`);
   else history.replaceState(null, '', `?away=${urlId(away)}&home=${urlId(home)}&seed=${seed}`);
   $('#lastplay').innerHTML = '<span class="muted">Setting up the game…</span>';
@@ -552,6 +553,14 @@ for (const [id, key] of [['#opt-routes', 'design'], ['#opt-reads', 'reads'], ['#
   el.checked = ctl.opts[key];
   el.addEventListener('change', () => { ctl.opts[key] = el.checked; store.set(key, el.checked); applyOpts(); });
 }
+// Camera: 'broadcast' (side-on) or 'all14' (behind the offense, offense at the bottom)
+function setCamera(view) {
+  ctl.opts.camera = view; store.set('camera', view);
+  $('#opt-camera').value = view;
+  if (ctl.renderer) { ctl.renderer.view = view; ctl.renderer.lastScale = null; }
+}
+$('#opt-camera').value = ctl.opts.camera;
+$('#opt-camera').addEventListener('change', (e) => setCamera(e.target.value));
 $('#opt-sprites').value = ctl.opts.sprites;
 $('#opt-sprites').addEventListener('change', (e) => {
   ctl.opts.sprites = e.target.value; store.set('sprites', ctl.opts.sprites);
@@ -570,6 +579,7 @@ document.addEventListener('keydown', (e) => {
   if ($('#game').classList.contains('hidden') || e.target.matches('input, select, textarea')) return;
   if (e.code === 'Space') { e.preventDefault(); $('#btn-play').click(); }
   if (e.key === 'n') $('#btn-step').click();
+  if (e.key === 'c') setCamera(ctl.opts.camera === 'all14' ? 'broadcast' : 'all14');
   if (e.key === 'f') setTheater(!document.body.classList.contains('theater'));
   if (e.key === 'Escape' && document.body.classList.contains('theater')) setTheater(false);
 });
