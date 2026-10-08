@@ -106,6 +106,23 @@ export class FieldRenderer {
       ctx.lineWidth = width * Math.max(0.35, Math.min(p0.k, 2));
       ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
     };
+    // Text painted on the grass (end zones, yard numbers): an upright, squashed approximation that
+    // holds up downfield but not right under the camera, where it would blow up into giant letters
+    // filling the bottom of the screen; fade it out as it gets close, and never stretch it taller.
+    const groundText = (text, X, Y, sizeYd, weight) => {
+      if (X < lo || X > hi) return;
+      const p = this.pt(X, Y), q = this.pt(X + 1, Y);
+      const alpha = clamp((1.35 - p.k) / 0.3, 0, 1);
+      const pxYd = p.k * this.scale;
+      if (alpha <= 0 || pxYd < 2 || p.y > this.h + pxYd * sizeYd) return;
+      ctx.save();
+      ctx.globalAlpha *= alpha;
+      ctx.translate(p.x, p.y); ctx.scale(1, clamp(Math.abs(q.y - p.y) / pxYd, 0.15, 1));
+      ctx.font = `${weight} ${Math.round(pxYd * sizeYd)}px Oswald, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
+    };
     // grass stripes
     for (let X = 0; X < 100; X += 5) quad(X, X + 5, 0, W, (X / 5) % 2 ? '#2a8a45' : '#2f944b');
     // end zones, painted with the team defending each end this play
@@ -113,18 +130,8 @@ export class FieldRenderer {
     const teams = game ? [game.teams[leftIdx], game.teams[1 - leftIdx]] : [null, null];
     [[-10, teams[0]], [100, teams[1]]].forEach(([ex, team]) => {
       quad(ex, ex + 10, 0, W, team ? team.colors.primary : '#225');
-      const c = ex + 5;
-      if (team && c >= lo && c <= hi) {
-        const p = this.pt(c, W / 2), q = this.pt(c + 1, W / 2);
-        const pxYd = p.k * this.scale, squash = Math.abs(q.y - p.y) / pxYd;
-        ctx.save();
-        ctx.translate(p.x, p.y); ctx.scale(1, Math.max(0.15, squash));
-        ctx.fillStyle = 'rgba(255,255,255,.9)';
-        ctx.font = `700 ${Math.round(pxYd * 5)}px Oswald, sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(team.name.toUpperCase(), 0, 0);
-        ctx.restore();
-      }
+      ctx.fillStyle = 'rgba(255,255,255,.9)';
+      if (team) groundText(team.name.toUpperCase(), ex + 5, W / 2, 5, 700);
     });
     // yard lines, sidelines, end lines
     ctx.strokeStyle = 'rgba(255,255,255,.85)';
@@ -139,25 +146,13 @@ export class FieldRenderer {
     }
     // numbers (lying flat on the grass)
     ctx.fillStyle = 'rgba(255,255,255,.8)';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (let X = 10; X <= 90; X += 10) {
-      if (X < lo || X > hi) continue;
-      for (const Y of [6, W - 6]) {
-        const p = this.pt(X, Y), q = this.pt(X + 1, Y);
-        const pxYd = p.k * this.scale;
-        if (pxYd < 2) continue;
-        ctx.save();
-        ctx.translate(p.x, p.y); ctx.scale(1, Math.max(0.15, Math.abs(q.y - p.y) / pxYd));
-        ctx.font = `600 ${Math.round(pxYd * 2.4)}px Oswald, sans-serif`;
-        ctx.fillText(String(X <= 50 ? X : 100 - X), 0, 0);
-        ctx.restore();
-      }
-    }
+    for (let X = 10; X <= 90; X += 10) for (const Y of [6, W - 6]) groundText(String(X <= 50 ? X : 100 - X), X, Y, 2.4, 600);
     // midfield logo
-    if (50 >= lo && 50 <= hi) {
-      const p = this.pt(50, W / 2), r = p.k * this.scale * 3.2;
+    const mid = this.pt(50, W / 2), midAlpha = clamp((1.35 - mid.k) / 0.3, 0, 1); // fades out under the camera too
+    if (50 >= lo && 50 <= hi && midAlpha > 0) {
+      const p = mid, r = p.k * this.scale * 3.2;
       ctx.save();
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.5 * midAlpha;
       ctx.translate(p.x, p.y); ctx.scale(1, p.sq);
       ctx.beginPath(); ctx.arc(0, 0, r, Math.PI, 0); ctx.fillStyle = '#e53935'; ctx.fill();
       ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI); ctx.fillStyle = '#fff'; ctx.fill();
