@@ -375,6 +375,36 @@ export class FieldRenderer {
       t.el.classList.toggle('carrier', holder === idx && rec.type === 'scrimmage');
     });
 
+    // player mode: a ring under the player you're controlling, key letters over the ones you can pick
+    if (opts.ctlIdx != null && opts.ctlIdx >= 0) {
+      const p = A.p[opts.ctlIdx];
+      if (p) {
+        const C = this.pt(absX(p[0]), absY(p[1]));
+        const rr = this.scale * 1.3 * C.k;
+        ctx.save();
+        ctx.strokeStyle = '#ffcb05'; ctx.lineWidth = 3;
+        ctx.shadowColor = 'rgba(255, 203, 5, .8)'; ctx.shadowBlur = 8;
+        ctx.beginPath(); ctx.ellipse(C.x, C.y, rr, rr * C.sq * (this.view === 'all14' ? 1 : 0.5), 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+    }
+    for (const m of opts.marks || []) {
+      const p = A.p[m.idx];
+      if (!p) continue;
+      const C = this.pt(absX(p[0]), absY(p[1]));
+      const sz = clamp(this.scale * 1.15 * C.k, 13, 26);
+      const y = C.y - this.scale * 3.9 * C.k - sz * 0.4;
+      ctx.save();
+      ctx.font = `800 ${Math.round(sz * 0.72)}px Inter, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = m.on ? '#ffcb05' : 'rgba(14,17,22,.85)';
+      ctx.strokeStyle = m.on ? '#1a1a1a' : 'rgba(255,255,255,.75)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.roundRect(C.x - sz / 2, y - sz / 2, sz, sz, 4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = m.on ? '#1a1a1a' : m.dim ? 'rgba(255,255,255,.4)' : '#fff';
+      ctx.fillText(m.label, C.x, y + 0.5);
+      ctx.restore();
+    }
+
     // QB read highlight
     if (opts.reads && A.read >= 0 && rec.type === 'scrimmage') {
       const p = A.p[A.read];

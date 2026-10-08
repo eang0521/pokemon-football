@@ -3,7 +3,7 @@
 import { RNG } from './rng.js';
 import { TeamDepth } from './depth.js';
 import { simulatePlay, simulateReturn } from './sim/playSim.js';
-import { PLAYS, FORMATIONS } from './playbook.js';
+import { PLAYS, FORMATIONS, DEFENSES } from './playbook.js';
 import { specialFrames } from './sim/special.js';
 import { callOffense, callDefense, fourthDown, patDecision, familyOf, KNEEL, SPIKE } from './playcaller.js';
 
@@ -28,6 +28,10 @@ const blankTeam = () => ({ first: 0, plays: 0, yds: 0, passYds: 0, rushYds: 0, t
 export class Game {
   constructor(away, home, seed = Date.now() % 1e9, options = {}) {
     this.options = { injuries: true, ...options };
+    // Player mode: the team index a person controls (null = the AI coaches both sides). Their play
+    // calls come from the page, and every play involving them runs live there: next() hands back an
+    // { type: 'await' } record, and the game resumes on next() (after a call) or finishLive(res).
+    this.human = options.human ?? null;
     this.seed = seed;
     this.rng = new RNG(seed);
     this.teams = [away, home];
@@ -131,16 +135,33 @@ export class Game {
   // Advance one "snap" (any play). Returns a record for the UI, or null when final.
   next() {
     if (this.final) return null;
-    this.curRecId = (this.recSeq = (this.recSeq || 0) + 1);
-    const before = this.snapshot();
-    this.preSnapState = before; // doScrimmage replaces this once the between-plays runoff is applied
+    if (this.pendingLive) return this.pendingLive.await; // still waiting for the live play
+    if (!this.pending) {
+      this.curRecId = (this.recSeq = (this.recSeq || 0) + 1);
+      this.recBefore = this.snapshot();
+      this.preSnapState = this.recBefore; // doScrimmage replaces this once the between-plays runoff is applied
+    }
     let rec;
     if (this.phase === 'kickoff') rec = this.doKickoff();
     else if (this.phase === 'pat') rec = this.doPAT();
     else rec = this.doScrimmage();
     if (!rec) return this.next();
+    if (rec.type === 'await') return rec;
+    return this.finishRec(rec);
+  }
+
+  // Player mode: the live play the page just ran (finishPlay's result) -> the play's record.
+  finishLive(res) {
+    const L = this.pendingLive;
+    this.pendingLive = null;
+    const rec = this.afterScrimmagePlay(L.oc, L.dc, L.sit, L.args, res, false);
+    if (L.goingForIt) rec.presnap.decision = `4th down: ${L.goingForIt}`;
+    return this.finishRec(rec);
+  }
+
+  finishRec(rec) {
     rec.id = this.curRecId;
-    rec.before = rec.before || this.preSnapState || before;
+    rec.before = rec.before || this.preSnapState || this.recBefore;
     if (rec.type !== 'penalty' && rec.cast) this.applyFatigue(rec);
     rec.notes = [...(rec.notes || []), ...this.notes];
     this.notes = [];
@@ -384,6 +405,7 @@ export class Game {
   doScrimmage() {
     const i = this.poss, d = 1 - i;
     const team = this.teams[i], dteam = this.teams[d];
+    if (this.pending) return this.resumeScrimmage();
     let sit = this.situation();
     this.preSnapClock(sit);
     if (this.clock <= 0) { this.clock = 0; this.checkQuarterEnd(); return null; }
@@ -401,22 +423,24 @@ export class Game {
       ((sit.secsHalf <= 22 && this.ballOn < 55 && sit.diff >= 0) || (sit.secsHalf <= 30 && this.ballOn < 30));
     sit.kneel = (kneelable && this.down < 4) || halfKneel;
     sit.spike = !sit.kneel && this.wantSpike;
-    if (sit.kneel) return this.doKneel(sit);
-    if (sit.spike) return this.doSpike(sit);
-
-    // field goal / punt decisions
+    // what the coach would do here (for the person's offense, it's only a suggestion)
     const K = this.depth[i].K;
     const fgDist = 100 - this.ballOn + 17;
     const inRange = fgDist <= 41 + K.ratings.kpow * 0.15;
-    if (this.kickNow && inRange) return this.doFieldGoal('Clock drained, now kick it');
     const needFGNow = inRange && sit.secsHalf <= 6 && (this.quarter === 2 || (sit.diff <= 0 && sit.diff >= -3) || this.quarter === 5);
-    if (needFGNow) return this.doFieldGoal('Time for one last kick');
-    if (this.down === 4) {
+    let special = sit.kneel ? { call: 'kneel', reason: 'Run out the clock' } : sit.spike ? { call: 'spike', reason: 'Stop the clock' }
+      : this.kickNow && inRange ? { call: 'fg', reason: 'Clock drained, now kick it' } : needFGNow ? { call: 'fg', reason: 'Time for one last kick' } : null;
+    if (!special && this.down === 4) {
       const dec = fourthDown(team, sit, K);
-      if (dec.call === 'punt') return this.doPunt(dec.reason);
-      if (dec.call === 'fg') return this.doFieldGoal(dec.reason);
-      this.goingForIt = dec.reason;
+      special = dec.call === 'go' ? null : dec;
+      if (dec.call === 'go') this.goingForIt = dec.reason;
     }
+    if (this.human === i) {
+      this.goingForIt = null;
+      this.pending = { sit, coach: special, fgDist: Math.round(fgDist), inRange };
+      return this.awaitCall('O');
+    }
+    if (special) return this.runSpecial(special, sit);
 
     // pre-snap penalties
     const pr = this.rng.next();
@@ -428,12 +452,76 @@ export class Game {
       if (!this.disciplined(who)) return this.preSnapPenalty('D', 'Offside', who);
     }
 
+    if (this.human === d) { this.pending = { sit }; return this.awaitCall('D'); }
+
     // play calls
     const oc = callOffense(team, sit, this.rng);
     const dc = callDefense(dteam, sit, this.scouting(i), this.rng);
+    return this.callsMade(oc, dc, sit);
+  }
+
+  callsMade(oc, dc, sit) {
+    const goingForIt = this.goingForIt;
+    this.goingForIt = null;
     const rec = this.runScrimmagePlay(oc, dc, sit, {});
-    if (this.goingForIt) { rec.presnap.decision = `4th down: ${this.goingForIt}`; this.goingForIt = null; }
+    if (rec.type === 'await') { this.pendingLive.goingForIt = goingForIt; return rec; }
+    if (goingForIt) rec.presnap.decision = `4th down: ${goingForIt}`;
     return rec;
+  }
+
+  runSpecial(sp, sit) {
+    if (sp.call === 'kneel') return this.doKneel(sit);
+    if (sp.call === 'spike') return this.doSpike(sit);
+    if (sp.call === 'punt') return this.doPunt(sp.reason);
+    return this.doFieldGoal(sp.reason);
+  }
+
+  // ---- player mode: the person's play call
+  // What they can call: every play their personnel can run (plus punt / field goal / kneel /
+  // spike on offense) or every defense, and what the coach would call.
+  awaitCall(side) {
+    const P = this.pending, i = this.poss, d = 1 - i, sit = P.sit;
+    const menu = { side, dd: this.ddText(), spot: this.yardText(this.ballOn), quarter: this.quarter, clock: this.clock };
+    if (side === 'O') {
+      const pers = this.depth[i].personnel;
+      menu.plays = PLAYS.filter((p) => p.forms[pers] && (!p.special || p.id === 'hailMary'))
+        .map((p) => ({ id: p.id, name: p.name, family: familyOf(p), form: FORMATIONS[p.forms[pers]]?.name || '' }));
+      menu.specials = [
+        ...(this.down === 4 ? [{ call: 'punt', label: 'Punt' }] : []),
+        ...(P.inRange ? [{ call: 'fg', label: `Field goal (${P.fgDist} yds)` }] : []),
+        { call: 'kneel', label: 'Kneel' },
+        ...(this.clockRunning && this.down < 4 ? [{ call: 'spike', label: 'Spike' }] : []),
+      ];
+      const oc = P.coach ? null : callOffense(this.teams[i], sit, this.rng);
+      P.coachOC = oc;
+      menu.coach = P.coach ? { special: P.coach.call, label: { kneel: 'Kneel', spike: 'Spike', punt: 'Punt', fg: 'Field goal' }[P.coach.call], reason: P.coach.reason }
+        : { play: oc.play.id, label: oc.play.name, reason: oc.reason };
+    } else {
+      menu.defs = DEFENSES.map((x) => ({ id: x.id, name: x.name, tags: x.tags }));
+      const dc = callDefense(this.teams[d], sit, this.scouting(i), this.rng);
+      P.coachDC = dc;
+      menu.coach = { def: dc.dcall.id, label: dc.dcall.name, reason: dc.reason };
+    }
+    P.menu = menu;
+    return { type: 'await', need: 'call', menu };
+  }
+
+  // After the person's call (this.humanCall), or with nobody to ask any more (a sim took over).
+  resumeScrimmage() {
+    const P = this.pending, i = this.poss, d = 1 - i, sit = P.sit;
+    const H = this.humanCall || {};
+    this.pending = null; this.humanCall = null;
+    if (P.menu?.side === 'O') {
+      const pick = H.special ? { call: H.special, reason: 'Your call' } : H.play ? null : P.coach;
+      if (pick) return this.runSpecial(pick, sit);
+      const oc = H.play && PLAY_BY_ID[H.play] ? { play: PLAY_BY_ID[H.play], reason: 'Your call' } : (P.coachOC || callOffense(this.teams[i], sit, this.rng));
+      const dc = callDefense(this.teams[d], sit, this.scouting(i), this.rng);
+      return this.callsMade(oc, dc, sit);
+    }
+    if (P.coach && !P.menu) return this.runSpecial(P.coach, sit); // offense call skipped by a sim
+    const oc = callOffense(this.teams[i], sit, this.rng);
+    const dc = H.def && DEF_BY_ID[H.def] ? { dcall: DEF_BY_ID[H.def], reason: 'Your call' } : (P.coachDC || callDefense(this.teams[d], sit, this.scouting(i), this.rng));
+    return this.callsMade(oc, dc, sit);
   }
 
   simArgs(i, play, dcall, sit, overrideBallOn) {
@@ -516,14 +604,37 @@ export class Game {
 
   runScrimmagePlay(oc, dc, sit, { twoPoint = false } = {}) {
     const i = this.poss, d = 1 - i;
-    const team = this.teams[i];
-    const aud = this.audible(i, oc, dc, sit);
+    const aud = this.human === i ? null : this.audible(i, oc, dc, sit); // the person calls their own plays
     if (aud) oc = { ...oc, play: aud.play, audible: aud.why };
     const args = this.simArgs(i, oc.play, dc.dcall, sit);
     // pre-snap motion on some pass plays when the FLEX is split out
     const fxAlign = FORMATIONS[args.form]?.align.FX;
     args.motion = oc.play.type === 'pass' && !oc.play.special && fxAlign && Math.abs(fxAlign[1]) > 4 && this.rng.chance(0.3);
+    if (!twoPoint && this.human != null && (this.human === i || this.human === d)) {
+      args.human = { side: this.human === i ? 'O' : 'D' };
+      args.motion = false; // (motion plays out before the snap; live, there's no "before")
+      const await_ = {
+        type: 'await', need: 'live', args,
+        rec: { type: 'scrimmage', frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: this.ballOn, fdX: Math.min(this.ballOn + this.toGo, 100),
+          presnap: this.presnapInfo(oc, dc, i, d, twoPoint, args.form) },
+      };
+      this.pendingLive = { oc, dc, sit, args, await: await_ };
+      return await_;
+    }
     const res = simulatePlay(args);
+    return this.afterScrimmagePlay(oc, dc, sit, args, res, twoPoint);
+  }
+
+  presnapInfo(oc, dc, i, d, twoPoint, form) {
+    return {
+      dd: twoPoint ? 'Two-point try' : this.ddText(), spot: this.yardText(this.ballOn), offCall: `${oc.play.name}`, form,
+      defCall: dc.dcall.name, offReason: oc.reason, defReason: dc.reason, offTeam: i, audible: oc.audible || null,
+      syn: { off: { ...this.depth[i].synergy.O.active }, def: { ...this.depth[d].synergy.D.active } },
+    };
+  }
+
+  afterScrimmagePlay(oc, dc, sit, args, res, twoPoint) {
+    const i = this.poss, d = 1 - i;
     // Poison: extra energy lost from contact with Poison types
     for (const pid in res.toxic) { const t = this.teamOf[pid]; if (t != null) this.depth[t].drain(this.players[pid], res.toxic[pid]); }
     if (this.onPlay) this.onPlay({ oc, dc, res, sit });
@@ -533,11 +644,7 @@ export class Game {
       type: 'scrimmage', frames: res.frames, cast: res.cast, frameTeam: i, dir: this.dirFor(i), W: FIELD_W,
       tacklers: res.tacklers, carrierId: res.tacklers?.length ? (res.kind === 'sack' ? res.cast.find((c) => c.side === 'O' && c.pos === 'QB')?.pid : (res.rusher || res.receiver || null)) : null,
       design: res.design, losX: los, fdX: Math.min(los + this.toGo, 100), events: res.events, motionT: res.motionT || 0,
-      presnap: {
-        dd: twoPoint ? 'Two-point try' : dd, spot: this.yardText(los), offCall: `${oc.play.name}`, form: args.form,
-        defCall: dc.dcall.name, offReason: oc.reason, defReason: dc.reason, offTeam: i, audible: oc.audible || null,
-        syn: { off: { ...this.depth[i].synergy.O.active }, def: { ...this.depth[d].synergy.D.active } },
-      },
+      presnap: { ...this.presnapInfo(oc, dc, i, d, twoPoint, args.form), dd: twoPoint ? 'Two-point try' : dd },
     };
     this.lastPlayId = oc.play.id;
     this.tendency[i].plays++;

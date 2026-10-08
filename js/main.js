@@ -3,6 +3,7 @@ import { POKEMON } from './data/pokemon.js';
 import { GameView, EngineClient, recFrames } from './client.js';
 import { FieldRenderer, spriteUrl } from './render.js';
 import { STAT_KEYS, STAT_LABELS } from './ratings.js';
+import { createPlayer } from './player.js';
 import { STARTERS, BENCH, parseCard, personnelOf, frontOf, PERSONNEL, FRONTS } from './roster.js';
 import { loadCustomTeams } from './storage.js';
 import { openBuilder, wireBuilder, TYPE_COLORS, synergyChips, unitCounts } from './builder.js';
@@ -171,7 +172,7 @@ $('#btn-new').addEventListener('click', () => {
 const ctl = {
   game: null, client: null, renderer: null, playing: false, speed: store.get('speed', 1), stepOnce: false,
   cur: null, phase: 'idle', phaseT: 0, preDur: 0, playDur: 0, postDur: 0, lastRec: null, evIdx: 0,
-  queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null,
+  queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null, human: null,
   opts: { design: store.get('design', true), reads: store.get('reads', true), names: store.get('names', false), sprites: store.get('sprites', 'home'), camera: store.get('camera', 'broadcast'), playcard: store.get('playcard', 'snap') },
 };
 
@@ -202,6 +203,10 @@ function adventureResult() {
 function startGameWith(away, home, seed) {
   ctl.client?.terminate();
   Object.assign(ctl, { game: null, cur: null, phase: 'idle', lastRec: null, queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null });
+  // player mode (exhibition): which team the person runs; its plays need the engine on the page
+  ctl.human = ctl.adventure ? null : ({ away: 0, home: 1 }[$('#opt-human').value] ?? null);
+  player.reset();
+  if (ctl.human != null && ctl.opts.camera !== 'all14') setCamera('all14');
   showScreen('game');
   $('#final').classList.add('hidden');
   $('#tokens').innerHTML = '';
@@ -214,8 +219,8 @@ function startGameWith(away, home, seed) {
   if (ctl.adventure) history.replaceState(null, '', `${location.pathname}#adventure`);
   else history.replaceState(null, '', `?away=${urlId(away)}&home=${urlId(home)}&seed=${seed}`);
   $('#lastplay').innerHTML = '<span class="muted">Setting up the game…</span>';
-  ctl.client = new EngineClient(onEngineMessage);
-  ctl.client.send({ type: 'new', away, home, seed, options: { injuries: ctl.adventure ? true : $('#opt-injuries').checked } });
+  ctl.client = new EngineClient(onEngineMessage, { local: ctl.human != null });
+  ctl.client.send({ type: 'new', away, home, seed, options: { injuries: ctl.adventure ? true : $('#opt-injuries').checked, human: ctl.human } });
   setPlaying(false);
 }
 
@@ -249,6 +254,16 @@ function onEngineMessage(m) {
     requestMore();
     return;
   }
+  // player mode: the engine needs a play call, or a play to run live
+  if (m.type === 'await') {
+    ctl.requested = Math.max(0, ctl.requested - 1);
+    ctl.game.apply(m.state);
+    if (ctl.simming) return;
+    ctl.queue.push({ await: m });
+    if (ctl.phase === 'idle' || ctl.phase === 'waiting') loadNext();
+    return;
+  }
+  if (m.type === 'busy') { ctl.requested = Math.max(0, ctl.requested - 1); return; }
   if (m.type === 'batch') {
     for (const r of m.recs) { storeHistory(r); ctl.simLast = r; }
     $('#sim-progress') && ($('#sim-progress').textContent = `Simulating… ${Math.round(m.progress * 100)}%`);
@@ -272,8 +287,11 @@ function loadNext() {
     requestMore();
     return;
   }
-  const rec = ctl.queue.shift();
+  const item = ctl.queue.shift();
+  if (item.await) return startAwait(item.await);
+  const rec = item;
   recFrames(rec);
+  if (rec.live) return liveResult(rec);
   ctl.cur = rec;
   ctl.evIdx = 0;
   ctl.phase = 'pre'; ctl.phaseT = 0;
@@ -291,6 +309,47 @@ function loadNext() {
   ctl.renderer.draw(rec, 0, ctl.game, { ...drawOpts(0), snapCamera: !ctl.lastRec || ctl.lastRec.type !== 'scrimmage' || rec.type !== 'scrimmage' });
   requestMore();
 }
+
+// ---- player mode
+function startAwait(m) {
+  $('#playcard').classList.add('hidden');
+  $('#toast').classList.add('hidden');
+  hideCaption();
+  renderScorebug(ctl.game.snapshot());
+  setPlaying(true);
+  if (m.need === 'call') { ctl.phase = 'call'; player.showMenu(m.menu); return; }
+  // a live play: the person's side runs it on the page
+  const rec = player.startLive(m);
+  ctl.cur = rec;
+  ctl.phase = 'live';
+  ctl.renderer.ensureTokens(rec, ctl.game);
+  ctl.renderer.lastScale = null;
+  ctl.renderer.draw(rec, 0, ctl.game, { snapCamera: true });
+}
+// the engine's record of a live play we just watched: straight to the result
+function liveResult(rec) {
+  player.endLive();
+  ctl.cur = rec;
+  ctl.evIdx = (rec.events || []).length;
+  ctl.playDur = (rec.frames.length - 1) * 0.05;
+  ctl.phase = 'post'; ctl.phaseT = 0;
+  ctl.postDur = ['td', 'int', 'fumble', 'safety', 'downs'].includes(rec.highlight) ? 2.2 : 1.1;
+  ctl.renderer.ensureTokens(rec, ctl.game);
+  onPlayEnd();
+  requestMore();
+}
+// a sim button: the coaches take over the call / live play in progress
+function releaseToCoaches() {
+  player.hideMenu();
+  const res = player.finishNow();
+  if (res) ctl.client.send({ type: 'live', res });
+  player.endLive();
+}
+const player = createPlayer({
+  stage: $('#stage'), help: $('#pm-help'), view: () => ctl.opts.camera,
+  send: (msg) => { ctl.phase = 'waiting'; ctl.client.send(msg); },
+  onCaption: (text) => showCaption(text),
+});
 
 function drawOpts(ft) {
   const early = ctl.phase === 'pre' ? 1 : Math.max(0, 1 - ft / 0.8);
@@ -376,6 +435,7 @@ function highlightIds() {
   return keep.sort((a, b) => a.order - b.order).map((x) => x.id);
 }
 function startReplay(ids, label = 'Replay') {
+  if (player.live || player.menuOpen) return; // finish the play first
   const list = ids.map((id) => ctl.history.get(id)).filter(Boolean);
   if (!list.length) return;
   if (!ctl.replay) ctl.replay = { saved: { cur: ctl.cur, phase: ctl.phase, phaseT: ctl.phaseT, preDur: ctl.preDur, playDur: ctl.playDur, postDur: ctl.postDur, evIdx: ctl.evIdx, playing: ctl.playing } };
@@ -426,7 +486,7 @@ function hideReplayBadge() { $('#replay-badge')?.classList.add('hidden'); }
 
 function advance(dt) {
   if (!ctl.game || !ctl.cur) return;
-  if (!ctl.replay && (ctl.phase === 'final' || ctl.phase === 'idle' || ctl.phase === 'waiting')) return;
+  if (!ctl.replay && (ctl.phase === 'final' || ctl.phase === 'idle' || ctl.phase === 'waiting' || ctl.phase === 'call' || ctl.phase === 'live')) return;
   ctl.phaseT += dt;
   if (ctl.phase === 'pre' && ctl.phaseT >= ctl.preDur) { ctl.phase = 'play'; ctl.phaseT = 0; }
   if (ctl.phase === 'play') {
@@ -454,6 +514,15 @@ function frame(now, fromTimer = false) {
   if (!fromTimer) lastRaf = now;
   const dt = Math.min(0.1, (now - lastT) / 1000);
   lastT = now;
+  if (player.live && !ctl.replay) {
+    // live play: real time (the speed buttons are for watching), drawn from the newest frames
+    const res = ctl.playing ? player.update(dt) : null;
+    if (res) { ctl.phase = 'waiting'; ctl.client.send({ type: 'live', res }); }
+    const ds = player.drawState();
+    if (ds && ctl.renderer && ctl.game) ctl.renderer.draw(ds.rec, ds.ft, ctl.game, { design: ctl.opts.design && ds.pre, designAlpha: 1, reads: false, marks: ds.marks, ctlIdx: ds.ctlIdx });
+    if (!fromTimer) requestAnimationFrame(frame);
+    return;
+  }
   if (ctl.playing) advance(dt * ctl.speed);
   if (ctl.cur && ctl.renderer && ctl.game) {
     const ft = ctl.phase === 'play' ? ctl.phaseT : ctl.phase === 'pre' ? 0 : ctl.playDur;
@@ -476,6 +545,7 @@ $('#btn-step').addEventListener('click', () => { if (ctl.phase === 'final' || ct
 $('#btn-sim').addEventListener('click', () => {
   if (!ctl.game || ctl.phase === 'final' || ctl.simming) return;
   if (ctl.replay) endReplay();
+  releaseToCoaches();
   ctl.simming = true;
   setPlaying(false);
   ctl.queue = [];
@@ -489,6 +559,7 @@ const SIM_TO_SECS = 180;
 $('#btn-sim3').addEventListener('click', () => {
   if (!ctl.game || ctl.phase === 'final' || ctl.simming || !canSimTo()) return;
   if (ctl.replay) endReplay();
+  releaseToCoaches();
   ctl.simming = true;
   setPlaying(false);
   ctl.queue = [];
@@ -500,6 +571,7 @@ $('#btn-sim3').addEventListener('click', () => {
 $('#btn-simq').addEventListener('click', () => {
   if (!ctl.game || ctl.phase === 'final' || ctl.simming || ctl.game.final) return;
   if (ctl.replay) endReplay();
+  releaseToCoaches();
   ctl.simming = true;
   ctl.simQuarter = ctl.game.quarter;
   setPlaying(false);
@@ -575,8 +647,10 @@ $('#opt-playcard').addEventListener('change', (e) => {
 });
 function applyOpts() { $('#stage').classList.toggle('names', ctl.opts.names); }
 applyOpts();
+document.addEventListener('keyup', (e) => player.keyUp(e));
 document.addEventListener('keydown', (e) => {
-  if ($('#game').classList.contains('hidden') || e.target.matches('input, select, textarea')) return;
+  if ($('#game').classList.contains('hidden') || e.target.matches?.('input, select, textarea')) return;
+  if (ctl.human != null && player.keyDown(e)) return;
   if (e.code === 'Space') { e.preventDefault(); $('#btn-play').click(); }
   if (e.key === 'n') $('#btn-step').click();
   if (e.key === 'c') setCamera(ctl.opts.camera === 'all14' ? 'broadcast' : 'all14');
@@ -618,6 +692,7 @@ $('#stage').addEventListener('click', (e) => {
   const card = $('#pcard');
   if (card && !card.classList.contains('hidden')) return; // this tap just closes the player card
   if (ctl.phase === 'final' && !ctl.replay) return;
+  if (player.live) { player.snapIfWaiting(); return; }
   $('#btn-play').click();
   showToast(ctl.playing ? '▶' : '❚❚', true);
 });
@@ -840,6 +915,7 @@ if (qp.get('away') && qp.get('home') && findTeam(qp.get('away')) && findTeam(qp.
 const OFF_CARD_POS = new Set(['QB', 'RB', 'WR', 'TE', 'OL']);
 let pcardSticky = false;
 function showPlayerCard(pid, el, sticky = false) {
+  if (sticky && player.live && player.tapPlayer(pid)) return; // player mode: tap to throw / switch
   let card = $('#pcard');
   if (!pid) { if (!pcardSticky && card) card.classList.add('hidden'); return; }
   const g = ctl.game;

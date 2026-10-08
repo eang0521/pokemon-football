@@ -644,3 +644,32 @@ body.theater .sb-clock { font-size: 18px; }
   .brand h1 { font-size: 14px; }
   .ctrl-main button { font-size: 12px; }
 }
+
+/* ---------- player mode ---------- */
+.callmenu { position: absolute; inset: 8px; z-index: 30; overflow: auto; background: rgba(14,17,22,.94); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 12px 12px; backdrop-filter: blur(4px); overscroll-behavior: contain; }
+.cm-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: 14px; }
+.cm-head b { font-family: var(--display); font-size: 18px; letter-spacing: .5px; }
+.cm-side { font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: #1a1a1a; background: var(--accent); padding: 2px 7px; border-radius: 4px; }
+.cm-coach { width: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; text-align: left; margin-bottom: 8px; }
+.cm-coach small { font-weight: 500; opacity: .75; flex-basis: 100%; }
+.cm-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
+.cm-h { font-family: var(--display); text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-size: 12px; margin: 8px 0 4px; }
+.cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 5px; }
+.cm-grid button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; padding: 6px 8px; }
+.cm-grid button small { color: var(--muted); font-size: 10.5px; }
+.cm-grid button:hover small { color: var(--text); }
+.pm-help { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 12; background: rgba(14,17,22,.85); border: 1px solid var(--line);
+  border-radius: 8px; padding: 5px 10px; font-size: 12px; white-space: nowrap; pointer-events: none; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; }
+.pm-help b { color: var(--accent); }
+.pm-stick { position: absolute; left: 12px; bottom: 12px; z-index: 13; width: 104px; height: 104px; border-radius: 50%; background: rgba(14,17,22,.45);
+  border: 2px solid rgba(255,255,255,.35); touch-action: none; display: grid; place-items: center; }
+.pm-stick i { width: 44px; height: 44px; border-radius: 50%; background: rgba(255,203,5,.85); box-shadow: 0 2px 8px rgba(0,0,0,.5); pointer-events: none; transition: transform .05s; }
+@media (max-width: 640px) {
+  .callmenu { inset: 4px; padding: 8px; }
+  .cm-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+  .pm-help { white-space: normal; text-align: center; width: max-content; bottom: 6px; font-size: 11px; }
+  .pm-stick { width: 88px; height: 88px; left: 8px; bottom: 8px; }
+  .pm-stick i { width: 38px; height: 38px; }
+}
+@media (pointer: coarse) { .pm-help { bottom: auto; top: 8px; } }

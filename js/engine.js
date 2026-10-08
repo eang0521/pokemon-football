@@ -64,46 +64,26 @@ export function createEngine() {
         return [{ msg: { type: 'init', teams: game.teams, seed: game.seed, state: stateOf() } }];
       }
       if (!game) return [];
+      // Player mode (always runs on the page): a play call answers an 'await', and a live play's
+      // result comes back to finish it. While an await is outstanding, extra 'next's are 'busy'.
+      if (msg.type === 'call') { game.humanCall = msg.call || {}; return step(); }
+      if (msg.type === 'live') {
+        const { rec: r, transfer } = recMsg(game.finishLive(msg.res));
+        return [{ msg: { type: 'rec', rec: { ...r, live: true }, state: stateOf() }, transfer }];
+      }
       if (msg.type === 'next') {
-        const rec = game.next();
-        if (!rec) return [{ msg: { type: 'final', state: stateOf() } }];
-        const { rec: r, transfer } = recMsg(rec);
-        return [{ msg: { type: 'rec', rec: r, state: stateOf() }, transfer }];
+        if (game.pending || game.pendingLive) return [{ msg: { type: 'busy' } }];
+        return step();
       }
       // Sim until only msg.secsLeft remain in regulation (e.g. 180 = 3:00 left in the 4th), or
       // with msg.quarter, through the end of the current quarter; then hand control back to
       // normal play-by-play.
       if (msg.type === 'simTo') {
-        const out = [];
-        let batch = [], transfer = [], last = null, rec;
-        // (quarters roll over when the next play starts, so stop at 0:00 instead of overshooting
-        // into the next quarter; if already at 0:00, finish the rollover)
-        // The clock can also run out between plays, rolling into the next quarter and running a
-        // play there in one step: near the end of the quarter keep a snapshot from before each
-        // play, and if a play lands in the next quarter, stop at the snapshot and send that play
-        // as a normal one to watch.
-        const q0 = game.quarter, atZero = game.clock <= 0;
-        const more = () => (msg.quarter ? game.quarter === q0 && (atZero || game.clock > 0) : secsLeft(game) > msg.secsLeft);
-        let prev = null, held = null;
-        while (!game.final && more()) {
-          prev = msg.quarter && !atZero && game.clock <= 90 ? JSON.parse(JSON.stringify(stateOf(false))) : null;
-          rec = game.next();
-          if (!rec) break;
-          if (prev && !game.final && game.quarter !== q0) { held = rec; break; }
-          const m = recMsg(rec);
-          batch.push(m.rec); transfer.push(...m.transfer); last = m.rec;
-          if (batch.length >= 25) { out.push({ msg: { type: 'batch', recs: batch, progress: estimate(game) }, transfer }); batch = []; transfer = []; }
-        }
-        out.push({ msg: { type: 'batch', recs: batch, progress: 1 }, transfer });
-        if (held) {
-          for (const id in prev.players) sentPlayers.add(id);
-          out.push({ msg: { type: 'simmed', state: prev, lastId: last?.id ?? null } });
-          const m = recMsg(held);
-          out.push({ msg: { type: 'rec', rec: m.rec, state: stateOf() }, transfer: m.transfer });
-        } else out.push({ msg: game.final ? { type: 'final', state: stateOf() } : { type: 'simmed', state: stateOf(), lastId: last?.id ?? null } });
-        return out;
+        const human = game.human; game.human = null; // the coaches take over for the sim
+        try { return simTo(msg); } finally { game.human = human; }
       }
       if (msg.type === 'simToEnd') {
+        game.human = null;
         const out = [];
         let batch = [], transfer = [], count = 0, rec;
         while ((rec = game.next())) {
@@ -118,6 +98,46 @@ export function createEngine() {
       return [];
     },
   };
+
+  function step() {
+    const rec = game.next();
+    if (!rec) return [{ msg: { type: 'final', state: stateOf() } }];
+    if (rec.type === 'await') return [{ msg: { ...rec, state: stateOf() } }];
+    const { rec: r, transfer } = recMsg(rec);
+    return [{ msg: { type: 'rec', rec: r, state: stateOf() }, transfer }];
+  }
+
+  // Sim until only msg.secsLeft remain in regulation, or (msg.quarter) through the end of the quarter.
+  function simTo(msg) {
+    const out = [];
+    let batch = [], transfer = [], last = null, rec;
+    // (quarters roll over when the next play starts, so stop at 0:00 instead of overshooting
+    // into the next quarter; if already at 0:00, finish the rollover)
+    // The clock can also run out between plays, rolling into the next quarter and running a
+    // play there in one step: near the end of the quarter keep a snapshot from before each
+    // play, and if a play lands in the next quarter, stop at the snapshot and send that play
+    // as a normal one to watch.
+    const q0 = game.quarter, atZero = game.clock <= 0;
+    const more = () => (msg.quarter ? game.quarter === q0 && (atZero || game.clock > 0) : secsLeft(game) > msg.secsLeft);
+    let prev = null, held = null;
+    while (!game.final && more()) {
+      prev = msg.quarter && !atZero && game.clock <= 90 ? JSON.parse(JSON.stringify(stateOf(false))) : null;
+      rec = game.next();
+      if (!rec) break;
+      if (prev && !game.final && game.quarter !== q0) { held = rec; break; }
+      const m = recMsg(rec);
+      batch.push(m.rec); transfer.push(...m.transfer); last = m.rec;
+      if (batch.length >= 25) { out.push({ msg: { type: 'batch', recs: batch, progress: estimate(game) }, transfer }); batch = []; transfer = []; }
+    }
+    out.push({ msg: { type: 'batch', recs: batch, progress: 1 }, transfer });
+    if (held) {
+      for (const id in prev.players) sentPlayers.add(id);
+      out.push({ msg: { type: 'simmed', state: prev, lastId: last?.id ?? null } });
+      const m = recMsg(held);
+      out.push({ msg: { type: 'rec', rec: m.rec, state: stateOf() }, transfer: m.transfer });
+    } else out.push({ msg: game.final ? { type: 'final', state: stateOf() } : { type: 'simmed', state: stateOf(), lastId: last?.id ?? null } });
+    return out;
+  }
 }
 
 const secsLeft = (g) => (g.quarter >= 5 ? 0 : (4 - g.quarter) * 360 + g.clock);

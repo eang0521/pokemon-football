@@ -10,6 +10,7 @@ A static, browser-only 7-on-7 tackle football simulation where every player is a
 - **Fatigue and substitutions.** HP is stamina; tired players rotate out for their backups.
 - **Injuries (optional).** Rare, exposure-based injuries knock a player out for the game; the backup steps in, or a bench player moves over out of position. You can turn them off on the matchup screen.
 - **Team builder.** Build a 23-card roster from all 1,025 Pokémon, then share it as a team code or link.
+- **Player mode.** Pick "You play: Away / Home" on the matchup screen to call your team's plays and play them yourself. On offense, choose from every play your personnel can run (plus punt, field goal, kneel, and spike); press Space to snap, steer the ball carrier with WASD (or the arrow keys), and throw with U / I / O to your WR / FLEX / RB. On defense, choose a coverage, then steer a defender with WASD and switch between them with R T Y U I O P (left to right as you see them). Enter takes the coach's suggested call. On touch screens, tap the field to snap, use the on-screen stick, and tap a player to throw to him or take him over. Kickoffs, extra points, and timeouts are still run by your coaching staff, and the sim buttons hand the game to the coaches.
 - **Two camera angles.** The side-on broadcast view, or **All-14**: a Madden-style view from behind the offense, looking downfield in perspective, with the offense at the bottom and the defense on top. Switch under Camera, or press C.
 - **Replays and highlights.** Replay any play from the play-by-play, or watch a highlight reel of the game's biggest plays when it ends.
 - **Player cards.** Hover (or tap) any player on the field to see their card, ratings, and energy.
@@ -111,6 +112,7 @@ js/teamcode.js        team share codes
 js/modal.js           dialogs
 js/builder.js         team builder + card browser
 js/render.js          canvas field + DOM sprite tokens
+js/player.js          player mode: play-call menu, keyboard / touch controls, live plays
 js/game.js            game state machine: clock, downs, scoring, special teams, stats
 js/depth.js           depth chart, energy/fatigue, substitutions
 js/roster.js          roster slots, FLEX personnel/fronts, validation
@@ -166,6 +168,7 @@ node tools/synergy-calibrate.mjs 400 all 2   # win-rate edge of every type syner
 node tools/coach-test.mjs 96 max     # same roster, maxed coaching sliders vs normal coaches (also: none, min, offMax, defMax)
 node tools/targets.mjs 30            # target share by slot (WR1 / FLEX / RB)
 node tools/pass-depth.mjs 24         # passing by play type: short, medium, deep, screen, play action
+node tools/player-mode-test.mjs 3     # player-mode flow end to end with a scripted "human" team
 ```
 
 Sprites are hotlinked from [pokemondb.net](https://pokemondb.net/sprites) (Pokémon HOME renders by default, with optional Gen 5 animated sprites). Pokémon © Nintendo / Game Freak / The Pokémon Company. This is an unaffiliated fan project.

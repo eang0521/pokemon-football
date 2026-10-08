@@ -31,11 +31,13 @@ export class GameView {
 
 // Talks to the Web Worker; falls back to running the engine on the page if workers fail.
 export class EngineClient {
-  constructor(onMessage) {
+  // local: run on the page (player mode: live plays hand objects back and forth every play)
+  constructor(onMessage, { local = false } = {}) {
     this.onMessage = onMessage;
     this.local = null;
     this.started = false;
     this.lastNew = null;
+    if (local) { this.fallback(); return; }
     try {
       this.w = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
       this.w.onmessage = (e) => { this.started = true; onMessage(e.data); };

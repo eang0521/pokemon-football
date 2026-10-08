@@ -78,7 +78,18 @@ function zoneSpot(name, S) {
 
 // --------------------------------------------------------------------------
 // Setup
+// Run a whole play at once (watch mode, tools).
 export function simulatePlay(opts) {
+  const S = setupPlay(opts);
+  while (!stepPlay(S));
+  return finishPlay(S);
+}
+
+// Player mode runs the same play a tick at a time: setupPlay, then stepPlay (one DT) until it
+// returns true, then finishPlay. opts.human = { side: 'O' | 'D' } puts a person in control:
+// the page writes S.human.move ({x, y}: a direction in the play's frame, x = downfield),
+// S.human.throwTo ('WR' | 'FX' | 'RB') and S.human.ctl (the defender they're controlling).
+export function setupPlay(opts) {
   const { rng, W, los, ballY, flip, offense, defense, play, dcall, situation } = opts;
   const S = {
     rng, W, los, ballY, flip, play, dcall, situation,
@@ -120,15 +131,60 @@ export function simulatePlay(opts) {
   S.ball.holder = S.O.QB;
   S.O.QB.hasBall = true;
   if (play.type === 'run' && play.carrier === 'QB') { setCarrier(S, S.O.QB); S.handed = true; S.handTime = 0; }
+  S.human = opts.human ? { side: opts.human.side, move: { x: 0, y: 0 }, throwTo: null, ctl: null } : null;
+  S.cast = S.ents.map((e) => ({ pid: e.pl.id, side: e.side, pos: e.pos, card: e.pl.pos }));
+  return S;
+}
 
-  while (!S.result && S.t < MAX_T) {
-    S.t = r2(S.t + DT);
-    tick(S);
-    record(S);
-  }
+// Advance one tick. Returns true once the play is over.
+export function stepPlay(S) {
+  if (S.result || S.t >= MAX_T) return true;
+  S.t = r2(S.t + DT);
+  tick(S);
+  record(S);
+  return !!S.result || S.t >= MAX_T;
+}
+
+export function finishPlay(S) {
   settleFall(S);
   if (!S.result) endPlay(S, { type: 'timeout' });
   return finalize(S);
+}
+
+// ---- player mode: who the person is steering, and steering them
+// Offense: whoever has the ball (the QB until he hands off or throws; the target while the
+// ball is in the air). Defense: the defender they picked.
+export function humanEnt(S) {
+  const H = S.human;
+  if (!H) return null;
+  if (H.side === 'D') return H.ctl;
+  const f = S.ball.flight;
+  if (S.ball.state === 'air' && f?.target?.side === 'O' && !f.pitch) return f.target;
+  if (S.carrier?.side === 'O') return S.carrier;
+  return S.O.QB.hasBall ? S.O.QB : null;
+}
+// Once they touch the stick the player is theirs for the rest of the play: no stick = pull up.
+function humanDrive(S, e) {
+  const H = S.human;
+  if (!H || e.engaged || e !== humanEnt(S)) return false;
+  const { x, y } = H.move;
+  const m = hyp(x, y);
+  if (m > 0.01) { e.manual = true; steer(e, e.x + (x / m) * 5, e.y + (y / m) * 5, 1, S); return true; }
+  if (e.manual) { steer(e, e.x, e.y, 0.35, S); return true; }
+  return false;
+}
+// The person's QB never throws on his own: U/I/O picks the receiver once the drop is done.
+function humanThrow(S, qb, st) {
+  if (st.windup) {
+    if (S.t >= st.windup.at) { const w = st.windup; st.windup = null; releaseThrow(S, w.rec, w.opts); }
+    return;
+  }
+  const H = S.human, slot = H.throwTo;
+  if (!slot) return;
+  H.throwTo = null;
+  if (S.scramble || qb.x > S.los + 0.5) return;
+  const rec = S.O[slot];
+  if (rec && rec.role === 'route' && !(rec.route.delay > S.t)) throwTo(S, rec, { pressured: (S.pressure ?? 9) < 2.6 });
 }
 
 // Pre-snap motion: the FLEX receiver motions across from the other side. A man
@@ -419,6 +475,12 @@ function qbLogic(S) {
   if (play.type === 'run') return qbRunPlay(S, qb);
 
   // ---- pass play
+  // the person has taken the QB off script: move him, throw on command, scramble past the line
+  if (S.human?.side === 'O' && qb.hasBall && humanDrive(S, qb)) {
+    if (qb.x > S.los + 0.3) return startScramble(S, qb);
+    if (st.state === 'drop') { st.state = 'set'; st.tSet = t; }
+    return humanThrow(S, qb, st);
+  }
   const dd = { quick: 1, std: 2, deep: 3 }[play.drop] || 2;
   const shotgun = S.form.shotgun;
   if (!st.drop) {
@@ -464,6 +526,7 @@ function qbLogic(S) {
   }
   S.pressure = nearest;
 
+  if (S.human?.side === 'O') return humanThrow(S, qb, st);
   if (st.windup) {
     if (t >= st.windup.at) { const w = st.windup; st.windup = null; releaseThrow(S, w.rec, w.opts); }
     return;
@@ -905,6 +968,7 @@ function intercept(S, d, how) {
 function offenseSkill(S, e) {
   const { t } = S;
   if (e === S.carrier || e.engaged) return;
+  if (humanDrive(S, e)) return; // the person steering the target while the ball's in the air
   if (S.interception) { pursueCarrier(S, e); return; }
   if (S.ball.state === 'loose') return chaseLoose(S, e);
 
@@ -1109,6 +1173,7 @@ function defenseLogic(S, e) {
   const { t, O } = S;
   if (e.engaged || e === S.carrier) return;
   if (e.down) return;
+  if (humanDrive(S, e)) return;
   if (S.ball.state === 'loose') return chaseLoose(S, e);
 
   // ball in the air: break on it
@@ -1456,6 +1521,7 @@ function carrierLogic(S, c) {
   const g = c.side === 'O' ? 1 : -1;
   const { t } = S;
   if (S.result) return;
+  if (humanDrive(S, c)) return;
   // run-play press phase: follow the aim point to the line
   if (c.side === 'O' && S.play.type === 'run' && !S.completion && c.x < S.los - 0.3 && t - (S.handTime || 0) < 0.9) {
     const aim = c.runAim || S.design.aim;

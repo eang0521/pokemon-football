@@ -43,6 +43,13 @@
       <span class="vs">@</span>
       <div class="slot" id="slot-home"><span class="slot-label">Home</span><span class="slot-name">Select a team</span></div>
       <div class="setup-actions">
+        <label class="seed" title="Player mode: call the plays and control the ball carrier (or a defender) yourself">You play
+          <select id="opt-human">
+            <option value="">Watch</option>
+            <option value="away">Away</option>
+            <option value="home">Home</option>
+          </select>
+        </label>
         <label class="seed"><input id="opt-injuries" type="checkbox" checked /> Injuries</label>
         <label class="seed">Seed <input id="seed" type="number" min="1" max="999999999" placeholder="random" /></label>
         <button id="btn-random" type="button" class="ghost">Random</button>
@@ -117,6 +124,7 @@
         <div id="playcard" class="playcard hidden"></div>
         <div id="toast" class="toast hidden"></div>
         <div id="final" class="final hidden"></div>
+        <div id="pm-help" class="pm-help hidden"></div>
         <button id="btn-theater" class="stage-btn" type="button" title="Full screen (F)" aria-label="Full screen" aria-pressed="false">
           <svg class="i-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
           <svg class="i-close" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg>
