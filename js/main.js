@@ -204,7 +204,7 @@ function startGameWith(away, home, seed) {
   ctl.client?.terminate();
   Object.assign(ctl, { game: null, cur: null, phase: 'idle', lastRec: null, queue: [], requested: 0, noMore: false, finalState: null, history: new Map(), replay: null });
   // player mode (exhibition): which team the person runs; its plays need the engine on the page
-  ctl.human = ctl.adventure ? null : ({ away: 0, home: 1 }[$('#opt-human').value] ?? null);
+  ctl.human = ctl.adventure ? (ctl.adventure.human ?? null) : ({ away: 0, home: 1 }[$('#opt-human').value] ?? null);
   player.reset();
   if (ctl.human != null && ctl.opts.camera !== 'all14') setCamera('all14');
   showScreen('game');

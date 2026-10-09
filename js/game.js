@@ -41,7 +41,7 @@ export class Game {
     this.depth.forEach((d, i) => { for (const c of d.all()) this.teamOf[c.id] = i; });
     this.stats = { players: {}, teams: [blankTeam(), blankTeam()] };
     for (const id in this.players) this.stats.players[id] = blankLine();
-    this.tendency = [{ plays: 0, pass: 0, deep: 0 }, { plays: 0, pass: 0, deep: 0 }];
+    this.tendency = [{ plays: 0, pass: 0, deep: 0, scr: 0, scrYds: 0 }, { plays: 0, pass: 0, deep: 0, scr: 0, scrYds: 0 }];
     // in-game learning: yards per offensive play family / per defensive call, and the looks each defense shows
     this.callLog = [{ off: {}, def: {} }, { off: {}, def: {} }];
     this.dTend = [{ plays: 0, blitz: 0, man: 0 }, { plays: 0, blitz: 0, man: 0 }];
@@ -110,7 +110,17 @@ export class Game {
       lastPlayId: this.lastPlayId, offQB: this.depth[i].QB, adjust: this.scouting(i),
       runShare: this.runShare(i),
       personnel: this.depth[i].personnel, front: this.depth[1 - i].front,
+      contain: this.containFor(i),
     };
+  }
+
+  // How much the defense has to worry about this offense's QB taking off, 0..1: his legs get some
+  // respect from the start, and every scramble that hurts them adds more (spy him, rush to contain).
+  containFor(i) {
+    const T = this.tendency[i], spd = this.depth[i].QB.ratings.spd;
+    let c = clamp((spd - 75) / 40, 0, 0.35);
+    if (T.scr >= 2) c += clamp((T.scrYds / T.scr - 3) / 6, 0, 1) * clamp(T.scr / 4, 0.5, 1);
+    return clamp(c, 0, 1);
   }
 
   snapshot() {
@@ -544,6 +554,7 @@ export class Game {
         wantOOB: sit.twoMinute && (this.quarter === 2 || sit.diff <= 0),
         protect: sit.killClock || sit.drain, // stay in bounds, keep the clock running
         runRespect: this.runRespect(i, sit),
+        contain: sit.contain ?? this.containFor(i),
         passExpect: this.passExpect(i, sit),
       },
     };
@@ -650,6 +661,7 @@ export class Game {
     this.tendency[i].plays++;
     if (oc.play.type === 'pass') this.tendency[i].pass++;
     if (oc.play.type === 'pass' && oc.play.depth === 'deep') this.tendency[i].deep++;
+    if (res.scramble) { this.tendency[i].scr++; this.tendency[i].scrYds += res.turnover ? 0 : res.yards; }
     const DT = this.dTend[d];
     DT.plays++;
     if (dc.dcall.tags.includes('blitz')) DT.blitz++;

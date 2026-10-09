@@ -304,6 +304,12 @@ function setupDefense(S) {
     else if (a.man) { e.role = a.dog ? 'dog' : 'man'; e.man = O[a.man]; e.press = !!a.press; }
     else { e.role = 'zone'; e.zone = zoneSpot(a.zone, S); }
   }
+  // in-game adjustment: vs a QB who's been running on them, the best-moving underneath defender spies him
+  if ((S.situation.contain || 0) >= 0.5 && !S.defList.some((e) => e.role === 'spy')) {
+    const under = S.defList.filter((e) => e.kind !== 'DL' && e.role === 'zone' && !e.zone.deep);
+    const pick = under.sort((a, b) => (b.kind === 'LB') - (a.kind === 'LB') || b.r.spd - a.r.spd)[0];
+    if (pick) { pick.role = 'spy'; pick.assign = 'spy'; }
+  }
   // in-game adjustment: deep help shades toward the hot receiver
   const hot = dcall.bracket && O[dcall.bracket];
   if (hot) for (const e of S.defList) if (e.role === 'zone' && e.zone.deep) e.zone.y = clamp(e.zone.y + clamp(hot.y - e.zone.y, -4, 4), 3, W - 3);
@@ -382,6 +388,7 @@ function tick(S) {
   // --- offense
   qbLogic(S);
   if (S.result) return;
+  qbOnTheMove(S);
   for (const e of S.offList) if (e !== O.QB) offenseSkill(S, e);
   if (S.carrier) carrierLogic(S, S.carrier);
 
@@ -704,11 +711,33 @@ function scrambleLane(S, qb) {
   return true;
 }
 
+// The QB with the ball outside the pocket (rolled out, or stepping up to the line): rushers fight
+// to get off their blocks and chase, and second-level defenders who aren't carrying a receiver
+// downfield come up to keep him behind the line (they react on their own timing).
+function qbOnTheMove(S) {
+  const qb = S.O.QB;
+  if (S.qbOut || S.thrown || !qb.hasBall || S.play.type !== 'pass' || S.t < 0.4) return;
+  const st = S.qb, pocketY = st.drop ? st.drop.y : S.ballY;
+  if (Math.abs(qb.y - pocketY) < 3.2 && qb.x < S.los - 1.2) return;
+  S.qbOut = S.t;
+  for (const p of S.pairs) {
+    if (p.kind !== 'pass') continue;
+    const d = p.d, quick = clamp(0.95 - d.r.awr * 0.005 - d.r.rushFin * 0.003, 0.25, 0.8);
+    const at = S.t + S.rng.range(quick * 0.5, quick);
+    p.winAt = p.winAt ? Math.min(p.winAt, at) : at;
+  }
+  for (const e of S.defList) {
+    const free = e.role === 'spy' || (e.role === 'zone' && !e.zone.deep) || e.role === 'dog' || e.role === 'dogRush' ||
+      (e.role === 'man' && e.man && (e.man.role === 'pblock' || e.man.role === 'runblock'));
+    if (free) e.rallyAt = S.t + e.react + (e.kind === 'LB' ? 0 : 0.1) - (S.situation.contain || 0) * 0.12;
+  }
+}
+
 function startScramble(S, qb) {
   S.scramble = true;
   setCarrier(S, qb);
   event(S, `${qb.pl.name} scrambles!`);
-  for (const e of S.ents) if (e.side === 'D' && (e.role === 'man' || e.role === 'zone' || e.role === 'spy')) e.scrambleReact = S.t + e.react + 0.2;
+  for (const e of S.ents) if (e.side === 'D' && (e.role === 'man' || e.role === 'zone' || e.role === 'spy')) e.scrambleReact = S.t + e.react + 0.05;
 }
 
 // --------------------------------------------------------------------------
@@ -1221,6 +1250,21 @@ function defenseLogic(S, e) {
     if (!recognized) return coverageLogic(S, e);
     return pursueCarrier(S, e);
   }
+  // QB on the move behind the line: come up and keep him there (between him and the line,
+  // leveraged to his side so he can't just bounce outside)
+  if (S.qbOut && !S.thrown && e.rallyAt != null && t >= e.rallyAt && O.QB.hasBall) {
+    const qb = O.QB;
+    // near the line (or closing on him): take a pursuit angle and attack
+    const d = dist(e, qb);
+    if (qb.x > S.los - 3 || d < 4) {
+      const lead = clamp(d / e.maxSpd, 0.1, 0.9);
+      return steer(e, qb.x + qb.vx * lead, clamp(qb.y + qb.vy * lead, 0.5, S.W - 0.5), 1, S);
+    }
+    // still deep in the backfield: get level with him, leveraged to his side
+    const px = qb.x + qb.vx * 0.45, py = qb.y + qb.vy * 0.45;
+    const tx = Math.max(S.los + 0.8, px + 1.5), ty = py + Math.sign(qb.vy || (qb.y - S.ballY) || 1) * 1.2;
+    return steer(e, tx, clamp(ty, 0.5, S.W - 0.5), 1, S);
+  }
 
   // play-action bite
   if (S.play.pa && reader && e.role !== 'rush') {
@@ -1238,6 +1282,12 @@ function coverageLogic(S, e) {
     case 'rush': case 'dogRush': {
       if (S.thrown) return steer(e, e.x - 0.5, e.y, 0.3, S);
       let tgt = S.carrier || (S.ball.holder || qb);
+      // contain: rushers stay on the QB's outside shoulder so he can't escape around them
+      const ct = S.situation.contain || 0;
+      if (ct > 0 && tgt === qb && S.play.type === 'pass') {
+        const side = Math.sign(e.y - qb.y) || 1;
+        tgt = { x: qb.x + 0.6, y: qb.y + side * 1.4 * ct };
+      }
       // vs a run look, attack the mesh (where the ball will be)
       if (S.play.type === 'run' && !S.handed && S.mesh && S.play.scheme !== 'draw') tgt = { x: (S.mesh.x + S.runner.x) / 2, y: (S.mesh.y + S.runner.y) / 2 };
       // avoid unengaged blockers directly in the path

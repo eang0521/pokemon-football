@@ -46,6 +46,9 @@ const root = () => $('#adv-root');
 export function initAdventure(hooks) {
   H = hooks;
   root().addEventListener('click', onClick);
+  root().addEventListener('change', (e) => {
+    if (run && e.target.matches?.('[data-opt="playGames"]')) { setPlayGames(e.target.checked); render(); }
+  });
   // remember whether the shop's "Sell cards" section is open across re-renders
   root().addEventListener('toggle', (e) => {
     if (!run?.node) return;
@@ -123,7 +126,7 @@ const livesText = (r) => (A.hasLives(r) ? `${'♥'.repeat(Math.max(0, r.lives))}
 // ---------------------------------------------------------------- home
 function renderHome() {
   const runs = loadRuns();
-  const tags = (r) => `${r.options?.endless ? ' · Endless' : ''}${r.options?.noLives ? ' · No lives' : ''}`;
+  const tags = (r) => `${r.options?.endless ? ' · Endless' : ''}${r.options?.noLives ? ' · No lives' : ''}${r.options?.playGames ? ' · You play' : ''}`;
   const status = (r) => r.status === 'won' ? '<span class="adv-st won">🏆 Champions</span>' : r.status === 'lost' ? `<span class="adv-st lost">Eliminated in act ${r.act}${tags(r)}</span>`
     : r.status === 'retired' ? `<span class="adv-st">Retired in act ${r.act}${tags(r)}</span>`
     : `<span class="adv-st">Act ${r.act} · ${livesText(r)} · ${r.coins} coins${tags(r)}</span>`;
@@ -162,6 +165,7 @@ function newDialog() {
     <div class="adv-opts">
       <label><input type="checkbox" id="n-endless"> <b>Endless</b> <span class="muted small">No final act: after the Champion, Legend tiers keep getting tougher</span></label>
       <label><input type="checkbox" id="n-nolives"> <b>No lives</b> <span class="muted small">Losses never end the run (you still have to beat each boss to move on)</span></label>
+      <label><input type="checkbox" id="n-play"> <b>Play my games</b> <span class="muted small">Call the plays and control the players in every battle yourself (you can change this any time)</span></label>
     </div>
     <details class="b-coach" open><summary>Coach tendencies</summary><div id="n-coach"></div></details>
     <p class="muted small">You can change these any time during the adventure with the <b>Coach</b> button.</p>
@@ -174,7 +178,7 @@ function newDialog() {
         colors: { primary: v('#n-c1'), secondary: v('#n-c2') },
         coach,
       };
-      run = A.newRun({ team, options: { endless: $('#n-endless', d).checked, noLives: $('#n-nolives', d).checked } });
+      run = A.newRun({ team, options: { endless: $('#n-endless', d).checked, noLives: $('#n-nolives', d).checked, playGames: $('#n-play', d).checked } });
       save();
       closeModal();
       flash('Your starting roster is ready. Pick your first stop on the map.');
@@ -298,8 +302,9 @@ function battleHTML(n) {
   ${n.attempt ? `<div class="adv-msg">Rematch ${n.attempt + 1}: the boss is waiting.</div>` : ''}
   <div class="b-gtitle">Their starters</div>
   <div class="acard-grid">${starters.map((x) => cardTile(x.c, { note: x.slot.label === 'FLEX' ? 'FLEX' : '' })).join('')}</div>
-  <div class="adv-actions"><button type="button" class="primary big" data-act="play">Kick off ▶</button><button type="button" data-act="roster">Edit lineup</button></div>
-  <p class="muted small">Watch the game or hit <b>Sim to end</b>. If you leave the game early, the result isn't counted and you can play it again.</p>`;
+  <div class="adv-actions"><button type="button" class="primary big" data-act="play">Kick off ▶</button><button type="button" data-act="roster">Edit lineup</button>
+    <label class="adv-playself"><input type="checkbox" data-opt="playGames" ${run.options?.playGames ? 'checked' : ''}> Play it myself</label></div>
+  <p class="muted small">${run.options?.playGames ? 'You call the plays and control your players (keyboard, or the on-screen stick on a phone).' : 'Watch the game'} or hit <b>Sim to end</b>. If you leave the game early, the result isn't counted and you can play it again.</p>`;
 }
 
 function resultHTML(n) {
@@ -498,10 +503,13 @@ function onRosterClick(e) {
 }
 function openCoach() {
   openModal(`<h3>Coaching</h3><p class="muted small">How ${esc(run.team.city)} ${esc(run.team.name)} call plays. Changes apply from the next battle.</p>
+    <label class="adv-playself"><input type="checkbox" id="c-play" ${run.options?.playGames ? 'checked' : ''}> <b>Play my games</b> <span class="muted small">call the plays and control the players yourself</span></label>
     <div id="c-coach"></div><div class="modal-actions"><button type="button" class="primary" data-close>Done</button></div>`, (d) => {
     coachControls($('#c-coach', d), run.team.coach, save);
+    $('#c-play', d).onchange = (e) => { setPlayGames(e.target.checked); render(); };
   });
 }
+function setPlayGames(on) { run.options = { ...run.options, playGames: on }; save(); }
 function openLog() {
   openModal(`<h3>Adventure log</h3><ol class="adv-log">${run.log.slice().reverse().map((l) => `<li><span class="muted">Act ${l.act}</span> ${esc(l.text)}</li>`).join('')}</ol>
     <div class="modal-actions"><button type="button" class="ghost" data-close>Close</button></div>`);
@@ -513,6 +521,7 @@ function playBattle() {
   const me = A.gameTeam(run);
   const runId = run.id;
   H.startBattle(n.opponent, me, A.battleSeed(run), {
+    human: run.options?.playGames ? 1 : null, // player mode: you're the home team
     onDone: (res) => {
       if (!run || run.id !== runId || run.node !== n || n.stage === 'result') return;
       A.applyBattle(run, res);

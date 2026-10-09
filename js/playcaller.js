@@ -175,7 +175,7 @@ export function callDefense(team, sit, oppTendency, rng) {
     if (down >= 3 && toGo >= 8 && d.id === 'c0') w *= 0.4 + coach.aggression * 0.6;
     if (toGo <= 2 && (d.id === 'c0' || d.id === 'c1press')) w *= 1.6;
     if (ballOn >= 90 && d.tags.includes('man')) w *= 1.3;
-    if (d.id === 'c1spy') w *= (sit.offQB?.ratings.spd || 60) >= 75 ? 2 : 0.3;
+    if (d.id === 'c1spy') w *= ((sit.offQB?.ratings.spd || 60) >= 75 ? 2 : 0.3) * (1 + (sit.contain || 0) * 3);
     if (d.id === 'cloud' && toGo <= 6) w *= 1.3;
     // front: three DL already bring pressure; three DBs lean toward coverage
     if (sit.front === 'DL' && d.tags.includes('blitz')) w *= 0.7;
@@ -203,6 +203,7 @@ export function callDefense(team, sit, oppTendency, rng) {
     bracket = oppTendency.hotSlot;
     why.push(`rolling coverage to ${oppTendency.hotName}`);
   }
+  if ((sit.contain || 0) >= 0.5) why.push('spying the QB and rushing to contain');
   if (expPass >= 0.65) why.push(`expecting pass (${pct(expPass)})`);
   else if (expPass <= 0.4) why.push(`expecting run (${pct(1 - expPass)})`);
   if (pick.tags.includes('blitz')) why.push('sending pressure');

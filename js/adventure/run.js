@@ -29,7 +29,8 @@ export const NODE_INFO = {
 export const BOSS_TITLES = ['Gym Leader', 'Elite Four', 'Champion'];
 // Endless mode keeps going after the Champion: Legend tiers.
 export const bossTitle = (act) => (act <= BOSS_TITLES.length ? BOSS_TITLES[act - 1] : `Legend ${act - BOSS_TITLES.length}`);
-// Run options: endless (no final act) and noLives (losses never end the run).
+// Run options: endless (no final act), noLives (losses never end the run), playGames (the person
+// plays every battle in player mode instead of watching).
 export const isEndless = (run) => !!run.options?.endless;
 export const hasLives = (run) => !run.options?.noLives;
 
@@ -293,7 +294,7 @@ export function gameTeam(run) {
 export function newRun({ team, seed = Math.floor(Math.random() * 1e9), options = {} }) {
   const run = {
     v: 1, id: `adv${seed.toString(36)}${Date.now().toString(36)}`, created: Date.now(), updated: Date.now(), seed,
-    status: 'active', team, options: { endless: !!options.endless, noLives: !!options.noLives }, autoManage: true, lives: START_LIVES, maxLives: START_LIVES, coins: 60,
+    status: 'active', team, options: { endless: !!options.endless, noLives: !!options.noLives, playGames: !!options.playGames }, autoManage: true, lives: START_LIVES, maxLives: START_LIVES, coins: 60,
     act: 1, maps: {}, pos: null, path: [], cards: [], nextUid: 1, lineup: {}, node: null, log: [],
     stats: { w: 0, l: 0, t: 0, pf: 0, pa: 0 },
   };

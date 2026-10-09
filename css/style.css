@@ -673,3 +673,5 @@ body.theater .sb-clock { font-size: 18px; }
   .pm-stick i { width: 38px; height: 38px; }
 }
 @media (pointer: coarse) { .pm-help { bottom: auto; top: 8px; } }
+.adv-playself { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; cursor: pointer; margin-left: 4px; }
+.modal-body .adv-playself { margin: 2px 0 10px; }
