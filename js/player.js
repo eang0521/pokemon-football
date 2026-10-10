@@ -29,7 +29,9 @@ export function createPlayer({ stage, help, send, view, onCaption }) {
     const clock = `${Math.floor(menu.clock / 60)}:${String(Math.floor(menu.clock % 60)).padStart(2, '0')}`;
     const coach = menu.coach;
     let body = '';
-    if (menu.side === 'O') {
+    if (menu.kicks) {
+      body += `<div class="cm-h">${esc(menu.title)}</div><div class="cm-row">${menu.kicks.map((k) => `<button type="button" data-kick="${k.call}">${esc(k.label)}</button>`).join('')}</div>`;
+    } else if (menu.side === 'O') {
       if (menu.specials.length) body += `<div class="cm-row">${menu.specials.map((s) => `<button type="button" data-special="${s.call}">${esc(s.label)}</button>`).join('')}</div>`;
       for (const [fam, title] of FAMILY_ORDER) {
         const plays = menu.plays.filter((p) => p.family === fam || (fam === 'deep' && p.id === 'hailMary'));
@@ -48,7 +50,7 @@ export function createPlayer({ stage, help, send, view, onCaption }) {
       e.stopPropagation();
       const b = e.target.closest('button');
       if (!b) return;
-      pick(b.dataset.coach ? {} : b.dataset.special ? { special: b.dataset.special } : b.dataset.play ? { play: b.dataset.play } : { def: b.dataset.def });
+      pick(b.dataset.coach ? {} : b.dataset.kick ? { kick: b.dataset.kick } : b.dataset.special ? { special: b.dataset.special } : b.dataset.play ? { play: b.dataset.play } : { def: b.dataset.def });
     });
     stage.appendChild(menuEl);
     setHelp(menu.side === 'O' ? 'Pick a play (or Enter for the coach\'s call)' : 'Pick a defense (or Enter for the coach\'s call)');

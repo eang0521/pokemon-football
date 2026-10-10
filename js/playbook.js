@@ -29,6 +29,10 @@ export const FORMATIONS = {
   offsetI: f('Offset I', false, { QB: [-1.1, 0], FX: [-3.8, 1.3], RB: [-6.3, 0], WR: [-0.5, -12] }),
   gunSplit: f('Gun Split Backs', true, { QB: [-5, 0], RB: [-5, -1.6], FX: [-5, 1.6], WR: [-0.5, -13] }),
   jumbo2: f('Goal Line 2-Back', false, { QB: [-1.1, 0], FX: [-3.6, 0.8], RB: [-6, 0], WR: [-0.6, -5] }),
+  // fakes, from the kicking formations (game.js puts the punter / kicker / up-back in the slots)
+  puntFake: f('Punt', true, { QB: [-13, 0], RB: [-5, 0.8], WR: [-0.5, -15], FX: [-0.5, 15] }), // punter throws
+  puntFakeRun: f('Punt', true, { QB: [-5, 0.8], RB: [-13, 0], WR: [-0.5, -15], FX: [-0.5, 15] }), // up-back takes the snap
+  fgFake: f('Field Goal', true, { QB: [-7, -0.7], RB: [-9.8, 1.8], WR: [-0.6, -3.9], FX: [-0.6, 3.9] }), // holder keeps it
 };
 
 // Route waypoints: [forward, outward] cumulative from the receiver's alignment.
@@ -129,6 +133,17 @@ export const PLAYS = [
   { id: 'sneak', name: 'QB Sneak', type: 'run', forms: GOAL, scheme: 'sneak', aim: 0.3, carrier: 'QB' },
 ];
 
+// Fakes: only ever called from punt / field-goal situations (special: 'fake' keeps them out of normal calls).
+const PUNT = { WR: 'puntFake', TE: 'puntFake', RB: 'puntFake' }, PUNT_RUN = { WR: 'puntFakeRun', TE: 'puntFakeRun', RB: 'puntFakeRun' };
+const FG = { WR: 'fgFake', TE: 'fgFake', RB: 'fgFake' };
+PLAYS.push(
+  { id: 'fakePuntPass', name: 'Fake Punt Pass', type: 'pass', special: 'fake', forms: PUNT, drop: 'quick', depth: 'short',
+    assign: { WR: 'slant', FX: 'quickOut', RB: 'flat' }, prog: ['FX', 'WR', 'RB'] },
+  { id: 'fakePuntRun', name: 'Fake Punt Run', type: 'run', special: 'fake', forms: PUNT_RUN, scheme: 'zone', aim: 7, carrier: 'QB' }, // up-back sweeps the edge
+  { id: 'fakeFGPass', name: 'Fake FG Pass', type: 'pass', special: 'fake', forms: FG, drop: 'quick', depth: 'short', boot: true,
+    assign: { WR: 'flat', FX: 'cross', RB: 'block' }, prog: ['WR', 'FX'] },
+  { id: 'fakeFGRun', name: 'Fake FG Run', type: 'run', special: 'fake', forms: FG, scheme: 'zone', aim: 6, carrier: 'QB' }, // holder keeps it outside
+);
 export const PLAY_BY_ID = Object.fromEntries(PLAYS.map((p) => [p.id, p]));
 export const assignFor = (play, slot, pers) => {
   const a = play.assign?.[slot];

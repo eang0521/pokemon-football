@@ -2,7 +2,7 @@
 // DOM-free so it can also run headless (see tools/sim-test.mjs).
 import { RNG } from './rng.js';
 import { TeamDepth } from './depth.js';
-import { simulatePlay, simulateReturn } from './sim/playSim.js';
+import { simulatePlay, simulateReturn, simulateFieldGoal } from './sim/playSim.js';
 import { PLAYS, FORMATIONS, DEFENSES } from './playbook.js';
 import { specialFrames } from './sim/special.js';
 import { callOffense, callDefense, fourthDown, patDecision, familyOf, KNEEL, SPIKE } from './playcaller.js';
@@ -45,6 +45,7 @@ export class Game {
     // in-game learning: yards per offensive play family / per defensive call, and the looks each defense shows
     this.callLog = [{ off: {}, def: {} }, { off: {}, def: {} }];
     this.dTend = [{ plays: 0, blitz: 0, man: 0 }, { plays: 0, blitz: 0, man: 0 }];
+    this.kickTend = [{ n: 0, block: 0 }, { n: 0, block: 0 }]; // how often each team sends everyone after kicks
     this.recent = [{ runs: [], passes: [], recYds: {} }, { runs: [], passes: [], recYds: {} }];
     this.score = [0, 0];
     this.quarterScores = [[0, 0, 0, 0], [0, 0, 0, 0]];
@@ -450,6 +451,10 @@ export class Game {
       this.pending = { sit, coach: special, fgDist: Math.round(fgDist), inRange };
       return this.awaitCall('O');
     }
+    if (special && this.human === d && (special.call === 'punt' || special.call === 'fg')) {
+      this.pending = { sit, kick: special };
+      return this.awaitKickCall();
+    }
     if (special) return this.runSpecial(special, sit);
 
     // pre-snap penalties
@@ -470,10 +475,10 @@ export class Game {
     return this.callsMade(oc, dc, sit);
   }
 
-  callsMade(oc, dc, sit) {
+  callsMade(oc, dc, sit, swap = null, fake = false) {
     const goingForIt = this.goingForIt;
     this.goingForIt = null;
-    const rec = this.runScrimmagePlay(oc, dc, sit, {});
+    const rec = this.runScrimmagePlay(oc, dc, sit, { swap, fake });
     if (rec.type === 'await') { this.pendingLive.goingForIt = goingForIt; return rec; }
     if (goingForIt) rec.presnap.decision = `4th down: ${goingForIt}`;
     return rec;
@@ -482,6 +487,10 @@ export class Game {
   runSpecial(sp, sit) {
     if (sp.call === 'kneel') return this.doKneel(sit);
     if (sp.call === 'spike') return this.doSpike(sit);
+    if (sp.call === 'fakePunt' || sp.call === 'fakeFG') {
+      const kind = sp.call === 'fakePunt' ? 'punt' : 'fg';
+      return this.doFake(kind, this.rng.chance(0.55) ? 'pass' : 'run', this.kickRushCall(1 - this.poss, kind), sp.reason);
+    }
     if (sp.call === 'punt') return this.doPunt(sp.reason);
     return this.doFieldGoal(sp.reason);
   }
@@ -499,6 +508,8 @@ export class Game {
       menu.specials = [
         ...(this.down === 4 ? [{ call: 'punt', label: 'Punt' }] : []),
         ...(P.inRange ? [{ call: 'fg', label: `Field goal (${P.fgDist} yds)` }] : []),
+        ...(this.down === 4 && this.ballOn >= 20 ? [{ call: 'fakePunt', label: 'Fake punt' }] : []),
+        ...(this.down === 4 && P.inRange ? [{ call: 'fakeFG', label: 'Fake field goal' }] : []),
         { call: 'kneel', label: 'Kneel' },
         ...(this.clockRunning && this.down < 4 ? [{ call: 'spike', label: 'Spike' }] : []),
       ];
@@ -516,11 +527,28 @@ export class Game {
     return { type: 'await', need: 'call', menu };
   }
 
+  // The person's defense, facing a punt or field goal: send everyone, or play it safe.
+  awaitKickCall() {
+    const P = this.pending, kind = P.kick.call, d = 1 - this.poss;
+    const coach = this.aiKickCall(d, kind);
+    P.coachKick = coach;
+    const safe = kind === 'punt' ? 'return' : 'safe';
+    const label = (c) => (c === 'block' ? (kind === 'punt' ? 'Punt block (all-out)' : 'FG block (all-out)') : kind === 'punt' ? 'Punt return' : 'Safe (watch for a fake)');
+    P.menu = {
+      side: 'D', kick: kind, dd: this.ddText(), spot: this.yardText(this.ballOn), quarter: this.quarter, clock: this.clock,
+      title: kind === 'punt' ? 'They\'re punting' : `${100 - this.ballOn + 17}-yard field goal try`,
+      kicks: [{ call: safe, label: label(safe) }, { call: 'block', label: label('block') }],
+      coach: { kick: coach, label: label(coach), reason: coach === 'block' ? 'Go get it' : 'Don\'t give them a fake' },
+    };
+    return { type: 'await', need: 'call', menu: P.menu };
+  }
+
   // After the person's call (this.humanCall), or with nobody to ask any more (a sim took over).
   resumeScrimmage() {
     const P = this.pending, i = this.poss, d = 1 - i, sit = P.sit;
     const H = this.humanCall || {};
     this.pending = null; this.humanCall = null;
+    if (P.kick) { this.kickCall = H.kick || P.coachKick || null; return this.runSpecial(P.kick, sit); }
     if (P.menu?.side === 'O') {
       const pick = H.special ? { call: H.special, reason: 'Your call' } : H.play ? null : P.coach;
       if (pick) return this.runSpecial(pick, sit);
@@ -613,11 +641,14 @@ export class Game {
     return null;
   }
 
-  runScrimmagePlay(oc, dc, sit, { twoPoint = false } = {}) {
+  runScrimmagePlay(oc, dc, sit, { twoPoint = false, swap = null, fake = false } = {}) {
     const i = this.poss, d = 1 - i;
     const aud = this.human === i ? null : this.audible(i, oc, dc, sit); // the person calls their own plays
     if (aud) oc = { ...oc, play: aud.play, audible: aud.why };
     const args = this.simArgs(i, oc.play, dc.dcall, sit);
+    // fakes: the punter / kicker / up-back take over slots (their own card ratings, no synergy)
+    args.situation.fake = fake; // the defense lined up for a kick: slow to realize
+    if (swap) args.offense.slots = args.offense.slots.map((sl) => (swap[sl.slot] ? { slot: sl.slot, player: swap[sl.slot], ratings: swap[sl.slot].ratings, mods: {} } : sl));
     // pre-snap motion on some pass plays when the FLEX is split out
     const fxAlign = FORMATIONS[args.form]?.align.FX;
     args.motion = oc.play.type === 'pass' && !oc.play.special && fxAlign && Math.abs(fxAlign[1]) > 4 && this.rng.chance(0.3);
@@ -668,6 +699,13 @@ export class Game {
     if (dc.dcall.tags.includes('man')) DT.man++;
     if (twoPoint) return this.applyTwoPoint(res, rec);
     this.applyScrimmage(res, rec, sit);
+    if (this.fakeLabel) {
+      rec.text = `${this.fakeLabel} ${rec.text}`;
+      const L = this.log[this.log.length - 1];
+      if (L && L.recId === this.curRecId) L.text = rec.text;
+      rec.highlight = rec.highlight || 'fake';
+      this.fakeLabel = null;
+    }
     if (rec.gain != null && !oc.play.special) {
       const y = res.turnover ? -25 : rec.gain;
       const fo = (this.callLog[i].off[familyOf(oc.play)] ||= { n: 0, yds: 0 }); fo.n++; fo.yds += y;
@@ -987,9 +1025,55 @@ export class Game {
   stUnit(cards) { return cards.map((c) => ({ player: c, ratings: c.ratings, mods: {} })); }
 
   // Run a simulated return (receiving team's frame). Returns the sim result.
-  runReturn(kind, kickerTeam, kickers, receivers, { kickX, kickY, landX, landY, hang }) {
-    return simulateReturn({ rng: this.rng, W: FIELD_W, kind, kickX, kickY, landX, landY, hang,
+  runReturn(kind, kickerTeam, kickers, receivers, { kickX, kickY, landX, landY, hang, ...more }) {
+    return simulateReturn({ rng: this.rng, W: FIELD_W, kind, kickX, kickY, landX, landY, hang, ...more,
       receivers: this.stUnit(receivers), coverage: this.stUnit(kickers) });
+  }
+
+  // ---- kicks: the receiving side's rush call, and fakes
+  // 'block' sends everyone after the kick (more blocks, but wide open for a fake); otherwise a
+  // safe look ('return' on punts, 'safe' on field goals). The person picks their own.
+  aiKickCall(d, kind) {
+    const late = this.quarter >= 4 && this.score[d] < this.score[1 - d] && this.secsGame() < 300;
+    let p = (kind === 'punt' ? 0.15 : 0.25) * (0.6 + this.teams[d].coach.aggression * 0.8);
+    if (late) p = 0.6;
+    return this.rng.chance(p) ? 'block' : kind === 'punt' ? 'return' : 'safe';
+  }
+  kickRushCall(d, kind) {
+    const call = this.kickCall || this.aiKickCall(d, kind);
+    this.kickCall = null;
+    const T = this.kickTend[d];
+    T.n++; if (call === 'block') T.block++;
+    return call;
+  }
+  // Rare fakes, likelier when the other side has been sending everyone (or shows it now) and
+  // it's short yardage; never on a kick that has to happen (end of the half, a must-make).
+  aiFake(i, kind, rush, sit) {
+    if (this.down !== 4 || this.human === i) return null;
+    const T = this.kickTend[1 - i];
+    let p = kind === 'punt' ? 0.012 : 0.01;
+    if (T.n >= 2 && T.block / T.n >= 0.5) p *= 3;
+    if (rush === 'block') p *= 2.5;
+    if (this.toGo > 10) return null;
+    p *= this.toGo <= 3 ? 2 : this.toGo >= 8 ? 0.35 : 1;
+    if (kind === 'punt' && (this.ballOn < 25 || this.ballOn > 65)) return null;
+    if (kind === 'fg' && (sit.secsHalf <= 15 || (this.quarter >= 4 && sit.diff <= 0 && sit.diff >= -3 && sit.secsGame < 150))) return null;
+    if (this.quarter >= 4 && sit.diff > 0 && sit.secsGame < 300) p *= 0.3;
+    p *= 0.6 + this.teams[i].coach.aggression * 0.8;
+    return this.rng.chance(Math.min(p, 0.15)) ? (this.rng.chance(0.55) ? 'pass' : 'run') : null;
+  }
+  // A fake: a real play from the kicking formation, with the punter / holder / up-back in the slots.
+  doFake(kind, variant, rush, reason) {
+    const i = this.poss;
+    const sit = this.situation();
+    const K = this.depth[i].K, RB = this.depth[i].onField.RB;
+    const id = kind === 'punt' ? (variant === 'pass' ? 'fakePuntPass' : 'fakePuntRun') : (variant === 'pass' ? 'fakeFGPass' : 'fakeFGRun');
+    const swap = kind === 'punt' ? (variant === 'pass' ? { QB: K } : { QB: RB, RB: K }) : { RB: K };
+    const dcall = DEF_BY_ID[rush === 'block' ? 'c0' : kind === 'punt' ? 'prevent' : 'c1'];
+    this.fakeLabel = kind === 'punt' ? 'FAKE PUNT!' : 'FAKE FIELD GOAL!';
+    const oc = { play: PLAY_BY_ID[id], reason: `${reason} (fake)` };
+    const dc = { dcall, reason: rush === 'block' ? 'Sending everyone after the kick' : 'Setting up the return' };
+    return this.callsMade(oc, dc, sit, swap, true);
   }
 
   creditReturnStats(res) {
@@ -1089,39 +1173,56 @@ export class Game {
     const dd = this.ddText();
     const spot = this.yardText(los);
     const presnap = { dd, spot, offCall: 'Punt', defCall: 'Punt Return', offReason: reason, defReason: '', offTeam: i };
+    const rush = this.kickRushCall(d, 'punt');
+    presnap.defCall = rush === 'block' ? 'Punt Block (all-out)' : 'Punt Return';
+    const fake = this.aiFake(i, 'punt', rush, this.situation());
+    if (fake) return this.doFake('punt', fake, rush, reason);
     this.stats.teams[i].plays++;
-    const blocked = this.rng.chance(0.008);
     const dist = 39 + K.ratings.kpow * 0.12 + this.rng.gauss(0, 5);
     const land = los + dist;
     const hang = 3.6 + K.ratings.kpow * 0.012 + this.rng.gauss(0, 0.3);
     const landY = clamp(this.ballY + this.rng.gauss(0, 6), 4, FIELD_W - 4);
     this.endDrive('Punt');
-    // ---- blocked or touchback: quick resolution
-    if (blocked || land >= 100) {
-      let text, newOn;
-      if (blocked) {
-        newOn = 100 - Math.round(los - 6);
-        text = `${K.name} punt is BLOCKED! ${this.teams[d].name} take over at the ${this.yardText(Math.round(los - 6), i)}.`;
-      } else {
-        newOn = 20;
-        S(K.id).punt.n++; S(K.id).punt.yds += 100 - los; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, 100 - los);
-        text = `${K.name} punts ${100 - los} yards into the end zone. Touchback.`;
-      }
-      const sf = specialFrames({ kind: 'punt', W: FIELD_W, kickX: los, kickY: this.ballY, landX: blocked ? los - 6 : Math.min(land, 108), landY, hang: blocked ? 0.4 : hang, returnEndX: null, kickers, receivers, returnerIdx: 0, blocked });
-      this.runPlayClock(Math.min(sf.duration, 8));
-      const rec = { type: 'punt', ...sf, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: null, design: null, events: [], text, presnap };
-      this.changePossession(newOn, 'Punt');
-      this.pushLog(rec, text, i);
-      return rec;
-    }
-    // ---- simulated punt return (receiving team's frame)
-    const py = Math.round(land - los);
-    S(K.id).punt.n++; S(K.id).punt.yds += py; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, py);
-    if (land >= 80) S(K.id).punt.in20++;
-    const res = this.runReturn('punt', i, kickers, receivers, { kickX: 100 - los, kickY: FIELD_W - this.ballY, landX: 100 - land, landY: FIELD_W - landY, hang });
+    // ---- the snap, the rush and the kick, then the return (receiving team's frame);
+    // blocked only if a rusher gets to the ball as it's punted
+    const touchback = land >= 100;
+    const res = this.runReturn('punt', i, kickers, receivers, { kickX: 100 - los, kickY: FIELD_W - this.ballY, landX: 100 - Math.min(land, 108), landY: FIELD_W - landY, hang, rushCall: rush, touchback });
     this.creditReturnStats(res);
     this.runPlayClock(Math.min(res.duration, 12));
     const rec = { type: 'punt', frames: res.frames, cast: res.cast, duration: res.duration, frameTeam: d, dir: this.dirFor(d), W: FIELD_W, losX: null, fdX: null, design: null, events: res.events, presnap, tacklers: res.tacklers, carrierId: res.tacklers.length ? retr.id : null };
+    if (res.blocked) {
+      // receiving team's frame: x >= 100 is the punting team's end zone
+      const who = this.players[res.blockedBy]?.name || 'the rush';
+      const at = res.endX;
+      let text;
+      rec.highlight = 'fumble';
+      if (at >= 100 && res.recoveredBy === 'receiving') {
+        text = `${K.name} punt is BLOCKED by ${who}! ${this.teams[d].name} fall on it in the end zone — TOUCHDOWN!`;
+        this.poss = d; this.addScore(d, 6); rec.highlight = 'td';
+        this.phase = 'pat'; this.patTeam = d;
+      } else if (at >= 100) {
+        text = `${K.name} punt is BLOCKED by ${who}! ${K.name} covers it in the end zone — SAFETY!`;
+        this.addScore(d, 2); rec.highlight = 'safety';
+        this.phase = 'kickoff'; this.kicking = i; this.kickFrom = 20; this.clockRunning = false;
+      } else {
+        const spotOn = clamp(Math.round(at), 1, 99);
+        text = `${K.name} punt is BLOCKED by ${who}! ${this.teams[d].name} take over at the ${this.yardText(spotOn, d)}.`;
+        this.changePossession(spotOn, 'Blocked punt');
+      }
+      rec.text = text;
+      this.pushLog(rec, text, i);
+      return rec;
+    }
+    const py = Math.round((touchback ? 100 : land) - los);
+    S(K.id).punt.n++; S(K.id).punt.yds += py; S(K.id).punt.lng = Math.max(S(K.id).punt.lng, py);
+    if (land >= 80 && !touchback) S(K.id).punt.in20++;
+    if (res.touchback || touchback) {
+      const text = `${K.name} punts ${py} yards into the end zone. Touchback.`;
+      this.changePossession(20, 'Punt');
+      rec.text = text;
+      this.pushLog(rec, text, i);
+      return rec;
+    }
     const start = Math.round(res.catchX), end = Math.round(res.endX);
     rec.retYds = res.fairCatch ? 0 : res.td ? 100 - start : Math.max(0, end - start); // for the highlight reel
     let text;
@@ -1180,24 +1281,33 @@ export class Game {
     const dist = 100 - los + 17;
     const pressure = this.kickPressure(i, pat ? 1 : 3);
     const p = this.fgProb(K, dist, pressure);
-    const blocked = this.rng.chance(pat ? 0.005 : 0.012);
-    const good = !blocked && this.rng.chance(p);
+    // the defense's rush call; a 4th-down kick might be a fake
+    const rush = pat ? this.aiKickCall(d, 'fg') : this.kickRushCall(d, 'fg');
+    const fake = pat ? null : this.aiFake(i, 'fg', rush, this.situation());
+    if (fake) return this.doFake('fg', fake, rush, reason);
+    // the snap, hold and kick, with a real rush: blocked only if someone gets there
+    const kickGood = this.rng.chance(p);
     const S = this.stats.players[K.id];
     const dd = pat ? 'PAT' : this.ddText();
     const spot = this.yardText(los, i);
     let text;
-    const miss = good ? 0 : this.rng.chance(0.5) ? -1 : 1;
-    const short = !good && !blocked && dist > 45 && this.rng.chance(0.4);
-    const landY = good ? FIELD_W / 2 + this.rng.range(-2, 2) : FIELD_W / 2 + miss * this.rng.range(3.6, 6);
+    const miss = kickGood ? 0 : this.rng.chance(0.5) ? -1 : 1;
+    const short = !kickGood && dist > 45 && this.rng.chance(0.4);
+    const landY = kickGood ? FIELD_W / 2 + this.rng.range(-2, 2) : FIELD_W / 2 + miss * this.rng.range(3.6, 6);
     const landX = short ? 106 : 111;
     const off = this.depth[i].offense();
     const kickers = [off[0], K, ...off.filter((c) => c.pos === 'OL'), ...off.filter((c) => c.pos !== 'OL' && c.pos !== 'QB')].slice(0, 7);
     const receivers = this.depth[d].defense();
-    const sf = specialFrames({ kind: 'fg', W: FIELD_W, kickX: los, kickY: this.ballY, landX, landY, hang: 0.9 + dist * 0.025, returnEndX: null, kickers, receivers, returnerIdx: null, blocked });
+    const sf = simulateFieldGoal({ rng: this.rng, W: FIELD_W, kickX: los, kickY: this.ballY, kickers: this.stUnit(kickers), receivers: this.stUnit(receivers),
+      rushCall: rush, landX, landY, hang: 0.9 + dist * 0.025 });
+    const blocked = sf.blocked, good = kickGood && !blocked;
+    const blocker = blocked ? this.players[sf.blockedBy]?.name : null;
+    // a blocked kick the defense scoops up in the kicking team's end zone is six the other way
+    const scoop = blocked && sf.recoveredBy === 'defense' && sf.recX != null && sf.recX <= 0;
     if (pat) {
       S.kick.xpa++;
       if (good) { S.kick.xpm++; this.addScore(i, 1); }
-      text = good ? `${K.name} extra point is GOOD.` : blocked ? `${K.name} extra point is BLOCKED!` : `${K.name} extra point is no good${miss < 0 ? ', wide left' : ', wide right'}.`;
+      text = good ? `${K.name} extra point is GOOD.` : blocked ? `${K.name} extra point is BLOCKED by ${blocker}!` : `${K.name} extra point is no good${miss < 0 ? ', wide left' : ', wide right'}.`;
     } else {
       S.kick.fga++;
       this.stats.teams[i].plays++;
@@ -1207,19 +1317,26 @@ export class Game {
         this.addScore(i, 3);
         text = `${K.name} ${dist}-yard field goal is GOOD!`;
       } else {
-        text = `${K.name} ${dist}-yard field goal is ${blocked ? 'BLOCKED' : short ? 'short' : `no good, wide ${miss < 0 ? 'left' : 'right'}`}.`;
+        text = `${K.name} ${dist}-yard field goal is ${blocked ? `BLOCKED by ${blocker}!` : short ? 'short' : `no good, wide ${miss < 0 ? 'left' : 'right'}`}${blocked ? '' : '.'}`;
+        if (scoop) text += ` ${this.teams[d].name} scoop it up in the end zone — TOUCHDOWN!`;
       }
     }
-    const rec = { type: pat ? 'pat' : 'fg', ...sf, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: null, design: null, events: [], text,
-      highlight: good && !pat ? 'fg' : (!good ? 'miss' : null),
-      presnap: { dd, spot, offCall: pat ? 'Extra Point' : `${dist}-yd Field Goal`, defCall: 'FG Block', offReason: pat ? (pressure >= 0.5 ? `Pressure kick (composure ${K.ratings.comp})` : '') : `${reason} (${Math.round(p * 100)}% make${pressure >= 0.5 ? `, pressure kick, composure ${K.ratings.comp}` : ''})`, defReason: '', offTeam: i } };
+    const rec = { type: pat ? 'pat' : 'fg', frames: sf.frames, cast: sf.cast, duration: sf.duration, frameTeam: i, dir: this.dirFor(i), W: FIELD_W, losX: los, fdX: null, design: null, events: sf.events, text,
+      highlight: scoop ? 'td' : good && !pat ? 'fg' : (!good ? 'miss' : null),
+      presnap: { dd, spot, offCall: pat ? 'Extra Point' : `${dist}-yd Field Goal`, defCall: rush === 'block' ? 'FG Block (all-out)' : 'FG Block (safe)', offReason: pat ? (pressure >= 0.5 ? `Pressure kick (composure ${K.ratings.comp})` : '') : `${reason} (${Math.round(p * 100)}% make${pressure >= 0.5 ? `, pressure kick, composure ${K.ratings.comp}` : ''})`, defReason: '', offTeam: i } };
     if (pat) {
       this.afterPAT(i);
     } else {
-      this.endDrive(good ? 'Field goal' : 'Missed FG');
+      this.endDrive(good ? 'Field goal' : blocked ? 'Blocked FG' : 'Missed FG');
       if (good) {
         if (this.quarter === 5) { this.finish(); }
         else { this.phase = 'kickoff'; this.kicking = i; this.kickFrom = 35; this.clockRunning = false; }
+      } else if (scoop) {
+        this.poss = d; this.addScore(d, 6);
+        if (this.quarter === 5) this.finish(); else { this.phase = 'pat'; this.patTeam = d; this.clockRunning = false; }
+      } else if (blocked) {
+        // the defense takes over where the ball ended up (behind the line, most of the time)
+        this.changePossession(clamp(100 - Math.round(sf.recX ?? los - 7), 1, 99), 'Blocked FG');
       } else {
         this.changePossession(Math.max(20, 100 - (los - 7)), 'Missed FG');
       }

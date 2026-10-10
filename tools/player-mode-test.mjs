@@ -13,7 +13,8 @@ for (let k = 0; k < N; k++) {
     if (rec.need === 'call') {
       calls++;
       const m = rec.menu, r = Math.random();
-      if (m.side === 'O') g.humanCall = r < 0.15 ? {} : r < 0.2 && m.specials.length ? { special: m.specials[0].call } : { play: m.plays[Math.floor(Math.random() * m.plays.length)].id };
+      if (m.kicks) g.humanCall = { kick: m.kicks[Math.floor(Math.random() * m.kicks.length)].call };
+      else if (m.side === 'O') g.humanCall = r < 0.15 ? {} : r < 0.2 && m.specials.length ? { special: m.specials[0].call } : { play: m.plays[Math.floor(Math.random() * m.plays.length)].id };
       else g.humanCall = r < 0.3 ? {} : { def: m.defs[Math.floor(Math.random() * m.defs.length)].id };
       continue;
     }
