@@ -43,7 +43,8 @@ export function specialFrames(o) {
   });
   const all = [...K, ...R];
   const retIdx = o.returnerIdx != null ? K.length + o.returnerIdx : -1;
-  const snapT = o.kind === 'kickoff' ? 0.9 : o.kind === 'punt' ? 1.25 : 1.05;
+  // kickoffs: the ball goes when the kicker's run-up reaches it (snapT is set then)
+  let snapT = o.kind === 'kickoff' ? Infinity : o.kind === 'punt' ? 1.25 : 1.05;
   const flightT = o.hang;
   let t = 0;
   const endReturn = o.returnEndX;
@@ -55,7 +56,10 @@ export function specialFrames(o) {
     // --- ball
     let holder = -1;
     if (t < snapT) {
-      if (o.kind === 'kickoff') { step(K[0].m, o.kickX - 0.5, W / 2, 0.9); ball.x = o.kickX; ball.y = W / 2; ball.z = 0.2; }
+      if (o.kind === 'kickoff') {
+        step(K[0].m, o.kickX - 0.3, W / 2, 1); ball.x = o.kickX; ball.y = W / 2; ball.z = 0.2;
+        if (Math.hypot(K[0].m.x - o.kickX, K[0].m.y - W / 2) < 0.8 || t > 3) snapT = t + DT;
+      }
       else {
         const s = clamp(t / 0.35, 0, 1);
         const hx = o.kind === 'punt' ? K[0].m.x : o.kickX - 7;
@@ -87,7 +91,7 @@ export function specialFrames(o) {
         else if (i === 1 && t > snapT - 0.65) step(k.m, o.kickX - 7.4, o.kickY + 0.3, 0.8); // kicker's approach
         return;
       }
-      if (t < snapT - (o.kind === 'kickoff' ? 0.6 : 0)) { if (o.kind === 'kickoff' && i > 0) step(k.m, o.kickX - 0.5, k.m.y, 0.6); return; }
+      if (t < snapT) { if (o.kind === 'kickoff' && i > 0) step(k.m, o.kickX - 0.7, k.m.y, 0.6); return; } // run up with the kicker, behind the ball
       if (i === 0 && o.kind !== 'kickoff') { step(k.m, k.m.x + 0.5, k.m.y, 0.3); return; }
       const tx = rm ? (caught ? rm.x + rm.vx * 0.5 : o.landX) : o.landX;
       const ty = rm ? rm.y + (i - 3) * (caught ? 0.3 : 1.8) : o.landY;

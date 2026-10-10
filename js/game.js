@@ -1035,7 +1035,7 @@ export class Game {
   // safe look ('return' on punts, 'safe' on field goals). The person picks their own.
   aiKickCall(d, kind) {
     const late = this.quarter >= 4 && this.score[d] < this.score[1 - d] && this.secsGame() < 300;
-    let p = (kind === 'punt' ? 0.15 : 0.25) * (0.6 + this.teams[d].coach.aggression * 0.8);
+    let p = (kind === 'punt' ? 0.15 : 0.16) * (0.6 + this.teams[d].coach.aggression * 0.8);
     if (late) p = 0.6;
     return this.rng.chance(p) ? 'block' : kind === 'punt' ? 'return' : 'safe';
   }
@@ -1178,10 +1178,17 @@ export class Game {
     const fake = this.aiFake(i, 'punt', rush, this.situation());
     if (fake) return this.doFake('punt', fake, rush, reason);
     this.stats.teams[i].plays++;
-    const dist = 39 + K.ratings.kpow * 0.12 + this.rng.gauss(0, 5);
+    // Boom it, unless a full punt would carry into the end zone: then place it and pin them deep.
+    // Accuracy and awareness decide how close to the goal line he can drop it (and how often).
+    const full = 39 + K.ratings.kpow * 0.12;
+    const toGoal = 100 - los;
+    const touch = clamp((K.ratings.kacc * 0.7 + K.ratings.awr * 0.3 - 40) / 55, 0, 1);
+    const pin = full + 4 > toGoal;
+    const dist = pin ? Math.min(toGoal - (9 - touch * 4) + this.rng.gauss(0, 5.5 - touch * 3.5), full + 6) : full + this.rng.gauss(0, 5);
     const land = los + dist;
-    const hang = 3.6 + K.ratings.kpow * 0.012 + this.rng.gauss(0, 0.3);
-    const landY = clamp(this.ballY + this.rng.gauss(0, 6), 4, FIELD_W - 4);
+    const hang = pin ? 3.3 + dist * 0.02 + this.rng.gauss(0, 0.2) : 3.6 + K.ratings.kpow * 0.012 + this.rng.gauss(0, 0.3);
+    const landY = clamp(this.ballY + this.rng.gauss(0, 6), pin ? 5 : 4, FIELD_W - (pin ? 5 : 4));
+    if (pin) presnap.offReason = `${reason} (pinning them deep)`;
     this.endDrive('Punt');
     // ---- the snap, the rush and the kick, then the return (receiving team's frame);
     // blocked only if a rusher gets to the ball as it's punted
@@ -1226,7 +1233,12 @@ export class Game {
     const start = Math.round(res.catchX), end = Math.round(res.endX);
     rec.retYds = res.fairCatch ? 0 : res.td ? 100 - start : Math.max(0, end - start); // for the highlight reel
     let text;
-    if (res.fairCatch) {
+    if (res.downed) {
+      const spotOn = clamp(Math.round(res.catchX), 1, 99);
+      text = `${K.name} punts ${100 - spotOn - los} yards. ${retr.name} lets it bounce, and it's downed at the ${this.yardText(spotOn, d)}.`;
+      if (spotOn <= 20) S(K.id).punt.in20++;
+      this.changePossession(spotOn, 'Punt');
+    } else if (res.fairCatch) {
       text = `${K.name} punts ${py} yards. Fair catch by ${retr.name} at the ${this.yardText(start, d)}.`;
       this.changePossession(clamp(start, 1, 99), 'Punt');
     } else if (res.fumble && res.recoveredBy === 'kicking') {
@@ -1282,7 +1294,7 @@ export class Game {
     const pressure = this.kickPressure(i, pat ? 1 : 3);
     const p = this.fgProb(K, dist, pressure);
     // the defense's rush call; a 4th-down kick might be a fake
-    const rush = pat ? this.aiKickCall(d, 'fg') : this.kickRushCall(d, 'fg');
+    const rush = pat ? (this.rng.chance(0.12) ? 'block' : 'safe') : this.kickRushCall(d, 'fg');
     const fake = pat ? null : this.aiFake(i, 'fg', rush, this.situation());
     if (fake) return this.doFake('fg', fake, rush, reason);
     // the snap, hold and kick, with a real rush: blocked only if someone gets there

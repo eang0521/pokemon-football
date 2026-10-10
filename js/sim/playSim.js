@@ -975,7 +975,7 @@ function resolveCatch(S) {
 }
 
 function catchMade(S, rec, oobCatch, contestedBy) {
-  S.completion = { rec, x: rec.x };
+  S.completion = { rec, x: rec.x, t: S.t };
   // the ball comes to his hands (he's within reach); don't move him to it
   rec.y = clamp(rec.y, 0.1, S.W - 0.1);
   setCarrier(S, rec);
@@ -1736,6 +1736,14 @@ function checkSack(S) {
 }
 
 function fumble(S, c, forcer, sack = false) {
+  // jarred loose as he's making the catch, before he's secured it: an incomplete pass, not a fumble
+  if (!sack && S.completion?.rec === c && S.t - S.completion.t < 0.9) { // ~a second to complete the process
+    event(S, `${forcer.pl.name} jars it loose as ${c.pl.name} makes the catch. Incomplete!`);
+    credit(S, forcer, 'pd', 1);
+    c.hasBall = false; S.carrier = null; S.completion = null;
+    S.ball.state = 'dead';
+    return endPlay(S, { type: 'incomplete', pbu: forcer });
+  }
   event(S, `FUMBLE! ${forcer.pl.name} knocks it loose!`, 'big');
   credit(S, forcer, 'ff', 1);
   credit(S, c, 'fum', 1);
@@ -1920,7 +1928,8 @@ function finalize(S) {
 //
 // op: { kind, phase: 'snap' | 'set' | 'kicked' | 'blocked', fwd (+1/-1: the kicking team's
 //   forward in this frame), los, snapper, holder (punter / holder), kicker, kickers, rushers,
-//   gunners, stepX (punter's step), snapDur, kickT, downfield: {x, y} }
+//   gunners, stepX (punter's step), snapDur, minKick (punts), downfield: {x, y} }. The kick goes off when
+//   the kicker gets to the ball (field goals) or the punter finishes his steps (punts).
 function kickPoint(op) {
   return op.kind === 'punt' ? { x: op.holder.x + op.fwd * 0.8, y: op.holder.y } : { x: op.holder.x, y: op.holder.y + 0.5 };
 }
@@ -1936,12 +1945,13 @@ function kickOpTick(S, op) {
   for (const e of op.kickers) {
     if (e.engaged) continue;
     if (e === op.holder) {
-      if (op.kind === 'punt' && op.phase === 'set') steer(e, op.stepX, e.y0, 0.32, S);
+      if (op.kind === 'punt' && op.phase === 'set') steer(e, op.stepX, e.y0, 0.26, S); // his two steps into the kick
       else steer(e, e.x, e.y, 0.3, S);
       continue;
     }
     if (e === op.kicker) {
-      if (t > op.kickT - 0.55) steer(e, kp.x - op.fwd * 0.7, kp.y - 0.5, 0.75, S);
+      // his steps start as the hold goes down, timed to meet the ball ~1.3 s after the snap
+      if (t > (op.approachT ?? 0.5)) steer(e, kp.x - op.fwd * 0.5, kp.y - 0.4, 0.8, S);
       else steer(e, e.x, e.y, 0.3, S);
       continue;
     }
@@ -1996,7 +2006,8 @@ function kickBlockCheck(S, op) {
   let who = null, pb = 0;
   for (const r of op.rushers) {
     if (r.engaged || S.t < r.stunUntil) continue;
-    const reach = 1.0 + clamp(r.height - 1, -0.4, 1.6) * 0.35 + (r.mods.reach || 0);
+    // a field goal rises slowly off the line: rushers with their arms up get a bit more reach on it
+    const reach = 1.0 + (op.kind === 'fg' ? 0.15 : 0) + clamp(r.height - 1, -0.4, 1.6) * 0.35 + (r.mods.reach || 0);
     const d = dist(r, bp);
     if (d > reach + 0.5) continue;
     const p = clamp((reach + 0.5 - d) / (reach + 0.5), 0, 1) * 0.85;
@@ -2050,7 +2061,7 @@ export function simulateFieldGoal(opts) {
   const op = {
     kind: 'fg', phase: 'snap', fwd: 1, los: kickX, snapper: S.offList[2], holder: S.offList[0], kicker: S.offList[1],
     kickers: S.offList, rushers: S.defList.filter((e) => !stay.includes(e)), gunners: [],
-    snapDur: 0.38, kickT: 1.28 + rng.range(-0.05, 0.08), snapX: kickX, snapY: kickY,
+    snapDur: 0.38, approachT: 0.3 + rng.range(-0.03, 0.05), snapX: kickX, snapY: kickY,
   };
   S.kickOp = op;
   record(S);
@@ -2059,7 +2070,9 @@ export function simulateFieldGoal(opts) {
     S.t = r2(S.t + DT);
     for (const e of S.ents) { e.hist.push([e.x, e.y]); if (e.hist.length > 12) e.hist.shift(); }
     if (op.phase === 'snap' || op.phase === 'set') {
-      if (S.t >= op.kickT && op.phase === 'set' && !kickBlockCheck(S, op)) {
+      // the kick goes off when the kicker's foot gets to the ball (or he'd be running forever)
+      const kp0 = kickPoint(op), atBall = hyp(op.kicker.x - (kp0.x - 0.5), op.kicker.y - (kp0.y - 0.4)) < 0.45;
+      if (op.phase === 'set' && (atBall || S.t > 2.4) && !kickBlockCheck(S, op)) {
         op.phase = 'kicked';
         const kp = kickPoint(op);
         flight = { fx: kp.x, fy: kp.y, t0: S.t };
@@ -2140,11 +2153,11 @@ export function simulateReturn(opts) {
       kind: 'punt', phase: 'snap', fwd: -1, los: kickX, snapper, holder: kicker, kicker: null,
       // vs an all-out rush look the gunners usually stay in and block (max protect) instead of releasing
       kickers: cov, rushers, gunners: block && rng.chance(0.85) ? [] : cov.filter((e) => e.pos === 'C1' || e.pos === 'C2'),
-      stepX: kickX + 11, snapDur: 0.72, kickT: 0.72 + 1.2 - kicker.r.awr * 0.002 + rng.range(-0.08, 0.12),
+      stepX: kickX + 11, snapDur: 0.72, minKick: 0.72 + 1.05 - kicker.r.awr * 0.002 + rng.range(-0.06, 0.1),
       snapX: snapper.x, snapY: snapper.y, downfield: { x: landX, y: landY },
     };
     // now and then the snap is low or the punter bobbles it: a slower get-off
-    if (rng.chance(0.04)) { op.kickT += rng.range(0.3, 0.6); op.snapDur += 0.12; event(S, 'Low snap! The punter has to dig it out.'); }
+    if (rng.chance(0.04)) { op.minKick += rng.range(0.3, 0.6); op.snapDur += 0.12; event(S, 'Low snap! The punter has to dig it out.'); }
     S.kickOp = op;
     S.ball = { state: 'snap', holder: null, x: snapper.x, y: snapper.y, z: 0.5 };
     record(S);
@@ -2152,7 +2165,7 @@ export function simulateReturn(opts) {
       S.t = r2(S.t + DT);
       for (const e of S.ents) { e.hist.push([e.x, e.y]); if (e.hist.length > 12) e.hist.shift(); }
       if (op.phase === 'blocked') { kickScramble(S); updateLooseBall(S); }
-      else if (S.t >= op.kickT && op.phase === 'set' && !kickBlockCheck(S, op)) {
+      else if (op.phase === 'set' && S.t >= op.minKick && (Math.abs(kicker.x - op.stepX) < 0.35 || S.t >= op.minKick + 0.5) && !kickBlockCheck(S, op)) {
         op.phase = 'kicked';
         const kp = kickPoint(op);
         kicker.hasBall = false;
@@ -2177,9 +2190,19 @@ export function simulateReturn(opts) {
     }
     S.puntOp = op;
   } else {
-    const fromX = kickX, fromY = W / 2;
-    startFlight(fromX, fromY, 0);
+    // kickoff: coverage lines up behind the ball, the kicker runs up, and it's kicked when he gets there
+    S.ball = { state: 'tee', holder: null, x: kickX, y: W / 2, z: 0.2 };
+    kicker.x = kicker.x0 = kickX + 7; kicker.y = kicker.y0 = W / 2;
+    for (const e of S.defList) if (e !== kicker) { e.x = e.x0 = kickX + 3; }
     record(S);
+    while (S.t < 3 && dist(kicker, S.ball) > 0.7) {
+      S.t = r2(S.t + DT);
+      steer(kicker, kickX + 0.3, W / 2, 1, S);
+      for (const e of S.defList) if (e !== kicker) steer(e, kickX + 0.7, e.y0, 0.7, S); // run up with him, staying behind the ball
+      for (const e of S.ents) { e.x += e.vx * DT; e.y += e.vy * DT; }
+      record(S);
+    }
+    startFlight(kickX, W / 2, S.t);
   }
   while (!S.result && S.t < 18) {
     S.t = r2(S.t + DT);
@@ -2194,7 +2217,7 @@ export function simulateReturn(opts) {
     cast: S.ents.map((e) => ({ pid: e.pl.id, side: e.side, pos: e.pos, card: e.pl.pos })),
     stats: S.stats, tacklers: (S.tacklers || []).map((e) => e.pl.id), toxic: S.toxic,
     fairCatch: R.type === 'fair', catchX: S.catchX ?? landX,
-    blocked: S.puntOp?.phase === 'blocked', blockedBy: S.puntOp?.blockedBy?.pl.id || null, touchback: R.type === 'touchback',
+    blocked: S.puntOp?.phase === 'blocked', blockedBy: S.puntOp?.blockedBy?.pl.id || null, touchback: R.type === 'touchback', downed: R.type === 'downed',
   };
   if (R.type === 'fumbleRec') { out.fumble = true; out.recoveredBy = S.fumbleRec.side === 'O' ? 'receiving' : 'kicking'; out.endX = clamp(S.fumbleRec.x, -10, 110); }
   else out.endX = clamp(c ? c.x : (S.catchX ?? landX), -10, 110);
@@ -2214,9 +2237,18 @@ function returnTick(S, kind, ret, kicker) {
     S.ball.x = f.fx + (f.tx - f.fx) * s; S.ball.y = f.fy + (f.ty - f.fy) * s;
     S.ball.z = 1 + f.peak * 4 * s * (1 - s);
     if (s >= 1 && S.touchback) return endPlay(S, { type: 'touchback' }); // bounces into the end zone
+    // a punt coming down inside his own 10: don't field it, let it bounce (it may roll into the end zone)
+    if (s >= 1 && kind === 'punt' && f.tx <= 9 && !S.bounce && S.rng.chance(0.5 + ret.r.awr * 0.005)) {
+      S.bounce = { fx: f.tx, fy: f.ty, tx: f.tx - S.rng.gauss(2.5, 4), ty: clamp(f.ty + S.rng.range(-2.5, 2.5), 1, S.W - 1), t0: t, T: 0.9 };
+      S.ball.state = 'bounce';
+      event(S, `${ret.pl.name} lets it bounce.`);
+      return;
+    }
     if (s >= 1) {
       const nearest = Math.min(...S.defList.map((d) => dist(d, ret)));
-      if (kind === 'punt' && nearest < 11 && S.rng.chance(nearest < 6 ? 0.97 : 0.75)) {
+      // fair catch only when he'd be hit as the ball arrives (a heads-up returner reads it a bit sooner)
+      const danger = 3.4 + ret.r.awr * 0.03; // ~5-6 yards: a gunner would be on him as he catches it
+      if (kind === 'punt' && nearest < danger && S.rng.chance(0.92)) {
         S.catchX = ret.x; S.ball.state = 'held'; S.ball.holder = ret; ret.hasBall = true;
         event(S, `${ret.pl.name} calls for a fair catch.`);
         return endPlay(S, { type: 'fair' });
@@ -2233,6 +2265,19 @@ function returnTick(S, kind, ret, kicker) {
     }
   }
   if (S.ball.state === 'loose') { updateLooseBall(S); if (S.result) return; }
+  // a punt he let bounce: rolls, then the coverage downs it (or it trickles into the end zone)
+  if (S.ball.state === 'bounce') {
+    const B = S.bounce, u = clamp((t - B.t0) / B.T, 0, 1), e = 1 - (1 - u) * (1 - u);
+    S.ball.x = B.fx + (B.tx - B.fx) * e; S.ball.y = B.fy + (B.ty - B.fy) * e;
+    S.ball.z = 0.2 + Math.abs(Math.sin(u * Math.PI * 2)) * 0.9 * (1 - u);
+    if (S.ball.x <= 0) { S.catchX = 0; event(S, 'It rolls into the end zone. Touchback.'); return endPlay(S, { type: 'touchback' }); }
+    if (u >= 1) {
+      const by = S.defList.slice().sort((a, b) => dist(a, S.ball) - dist(b, S.ball))[0];
+      S.catchX = S.ball.x;
+      event(S, `Downed by ${by.pl.name}.`);
+      return endPlay(S, { type: 'downed' });
+    }
+  }
   // --- receiving team
   for (const e of S.offList) {
     if (e === S.carrier || e.engaged) continue;
