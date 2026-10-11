@@ -1,4 +1,5 @@
 import { TEAMS } from './data/teams.js';
+import { GYM_TEAMS, GYM_REGIONS } from './data/gymTeams.js';
 import { POKEMON } from './data/pokemon.js';
 import { GameView, EngineClient, recFrames } from './client.js';
 import { FieldRenderer, spriteUrl } from './render.js';
@@ -23,7 +24,7 @@ const store = {
 const typeChips = (types) => `<span class="types">${types.map((t) => `<span class="type" style="background:${TYPE_COLORS[t] || '#666'}">${t}</span>`).join('')}</span>`;
 const clockText = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const qText = (q) => (q === 5 ? 'OT' : ['1st', '2nd', '3rd', '4th'][q - 1]);
-const allTeams = () => [...loadCustomTeams(), ...TEAMS];
+const allTeams = () => [...loadCustomTeams(), ...TEAMS, ...GYM_TEAMS];
 // teams embedded in shared game links ("~CODE") are decoded on the fly (not saved)
 const linkTeams = new Map();
 const findTeam = (id) => {
@@ -49,6 +50,7 @@ function importDialog(prefill = '') {
       if (!team) { msg.innerHTML = `<span class="b-errors">${esc(errors[0])}</span>`; return; }
       if (errors.length) { msg.innerHTML = `<span class="b-errors">Imported, but the roster needs work: ${esc(errors.slice(0, 2).join('; '))}. Open it in the builder to finish.</span>`; }
       saveCustomTeam(team);
+      teamTab = 'custom';
       renderTeamGrid();
       if (!errors.length) {
         if (!sel.away) sel.away = team.id; else if (!sel.home && sel.away !== team.id) sel.home = team.id;
@@ -80,10 +82,36 @@ $$('.modes [data-mode]').forEach((b) => b.addEventListener('click', () => {
 // ==========================================================================
 // Setup screen
 const sel = { away: null, home: null };
+// the picker's three tabs: the regional teams, the gym leaders, and the person's own teams
+let teamTab = store.get('teamTab', 'regional');
+const tabTeams = (tab) => (tab === 'gym' ? GYM_TEAMS : tab === 'custom' ? loadCustomTeams() : TEAMS);
+$$('.team-tabs [data-ttab]').forEach((b) => b.addEventListener('click', () => { teamTab = b.dataset.ttab; store.set('teamTab', teamTab); renderTeamGrid(); }));
 function renderTeamGrid() {
+  if (!['regional', 'gym', 'custom'].includes(teamTab)) teamTab = 'regional';
+  $$('.team-tabs [data-ttab]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.ttab === teamTab);
+    b.setAttribute('aria-selected', b.dataset.ttab === teamTab);
+    b.querySelector('.n').textContent = tabTeams(b.dataset.ttab).length;
+  });
   const grid = $('#team-grid');
-  grid.innerHTML = allTeams().map((t) => {
-    const stars = ['QB', 'RB', 'WR'].map((k) => POKEMON[parseCard(t.roster[k], k)?.mon]).filter(Boolean);
+  const teams = tabTeams(teamTab);
+  if (teamTab === 'gym') {
+    grid.innerHTML = GYM_REGIONS.map((r) => `<h3 class="grid-head">${r}</h3>${teams.filter((t) => t.region === r).map(teamCardHtml).join('')}`).join('');
+  } else if (teamTab === 'custom' && !teams.length) {
+    grid.innerHTML = `<div class="grid-empty"><p>You haven't made any teams yet.</p><div class="build-row"><button type="button" class="primary" data-build>＋ Build a team</button><button type="button" data-import>Import a team code</button></div></div>`;
+    grid.querySelector('[data-build]').onclick = () => editTeam(null);
+    grid.querySelector('[data-import]').onclick = () => importDialog();
+  } else grid.innerHTML = teams.map(teamCardHtml).join('');
+  grid.querySelectorAll('.team-card').forEach((el) => {
+    el.addEventListener('click', (e) => { if (e.target.closest('[data-edit]')) return; pickTeam(el.dataset.team); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickTeam(el.dataset.team); } });
+  });
+  grid.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editTeam(findTeam(b.dataset.edit))));
+  syncSetup();
+}
+function teamCardHtml(t) {
+    // gym teams show the leader's own Pokémon; everyone else shows their QB, RB and WR
+    const stars = t.aces ? t.aces.map((m) => POKEMON[m]).filter(Boolean) : ['QB', 'RB', 'WR'].map((k) => POKEMON[parseCard(t.roster[k], k)?.mon]).filter(Boolean);
     const c = t.coach;
     const meter = (label, v) => `<span>${label}</span><div class="meter"><span style="width:${Math.round(v * 100)}%"></span></div>`;
     return `<div class="team-card" data-team="${t.id}" role="button" tabindex="0">
@@ -94,7 +122,7 @@ function renderTeamGrid() {
       </div>
       <div class="info">
         <div class="tname">${esc(t.city)} ${esc(t.name)}</div>
-        <div class="coach">${esc(c.name)} · ${esc(c.style)}</div>
+        <div class="coach">${t.title ? `${esc(t.title)} ` : ''}${esc(c.name)} · ${esc(c.style)}${t.type ? ` ${typeChips([t.type])}` : ''}</div>
         ${(() => {
           const o = unitCounts(t.roster, 'O'), d = unitCounts(t.roster, 'D');
           const row = (label, set, u) => `<div class="unit-row"><span class="unit-lab">${label}</span><span class="set">${set}</span>${synergyChips(u.counts, u.active, { compact: true, onlyActive: true }) || '<span class="muted small">no synergies</span>'}</div>`;
@@ -104,13 +132,6 @@ function renderTeamGrid() {
         <div class="card-foot"><span class="pick"></span>${t.custom ? `<button type="button" class="ghost edit" data-edit="${t.id}">Edit</button>` : ''}</div>
       </div>
     </div>`;
-  }).join('');
-  grid.querySelectorAll('.team-card').forEach((el) => {
-    el.addEventListener('click', (e) => { if (e.target.closest('[data-edit]')) return; pickTeam(el.dataset.team); });
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickTeam(el.dataset.team); } });
-  });
-  grid.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => editTeam(findTeam(b.dataset.edit))));
-  syncSetup();
 }
 function pickTeam(id) {
   if (sel.away === id) sel.away = null;
@@ -138,14 +159,15 @@ function syncSetup() {
   $('#btn-start').disabled = !(sel.away && sel.home);
 }
 $('#btn-random').addEventListener('click', () => {
-  const ids = allTeams().map((t) => t.id).sort(() => Math.random() - 0.5);
+  const from = tabTeams(teamTab).length >= 2 ? tabTeams(teamTab) : allTeams();
+  const ids = from.map((t) => t.id).sort(() => Math.random() - 0.5);
   sel.away = ids[0]; sel.home = ids[1];
   syncSetup();
 });
 function editTeam(team) {
   showScreen('builder');
   openBuilder(team, {
-    onSave: (t) => { showScreen('setup'); renderTeamGrid(); if (!sel.away) sel.away = t.id; else if (!sel.home && sel.away !== t.id) sel.home = t.id; syncSetup(); },
+    onSave: (t) => { showScreen('setup'); teamTab = 'custom'; renderTeamGrid(); if (!sel.away) sel.away = t.id; else if (!sel.home && sel.away !== t.id) sel.home = t.id; syncSetup(); },
     onClose: () => { showScreen('setup'); renderTeamGrid(); },
   });
 }

@@ -53,6 +53,14 @@ button.on { background: var(--accent2); border-color: var(--accent2); color: #ff
 .setup-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .seed { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
 .seed input[type=number] { width: 110px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.team-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.team-tabs button { background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 12px; color: var(--muted); font-weight: 700; white-space: nowrap; }
+.team-tabs button.on { color: var(--text, inherit); border-bottom-color: var(--accent); }
+.team-tabs .n { font-size: 11px; opacity: .7; margin-left: 2px; }
+.team-grid .grid-head { grid-column: 1 / -1; margin: 10px 0 0; font-family: var(--display); font-size: 18px; text-transform: uppercase; letter-spacing: .5px; }
+.team-grid .grid-head:first-child { margin-top: 0; }
+.team-grid .grid-empty { grid-column: 1 / -1; color: var(--muted); padding: 18px 0; }
+.team-card .coach .types { display: inline-flex; vertical-align: 1px; }
 .team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .team-card { text-align: left; padding: 0; overflow: hidden; border-radius: var(--radius); background: var(--panel); display: flex; flex-direction: column; }
 .team-card .band { height: 70px; position: relative; display: flex; align-items: flex-end; gap: 0; padding: 0 10px; overflow: hidden; }
