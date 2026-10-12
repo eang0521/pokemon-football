@@ -903,9 +903,13 @@ function updateBallFlight(S) {
       if (d.side !== 'D' || d.tipTried) continue;
       if (hyp(d.x - b.x, d.y - b.y) < 0.85 + (d.mods.reach || 0) && b.z < 2.2 + d.height * 0.4 + (d.mods.reach || 0)) {
         d.tipTried = true;
-        if (S.rng.chance(0.55)) {
-          if (S.rng.chance(0.2 + d.r.ball * 0.003)) return intercept(S, d, 'undercuts the route and picks it off');
-          event(S, `Tipped by ${d.pl.name}!`);
+        // right out of the QB's hand the ball is on him too fast to catch: a rusher gets a hand on it
+        // (a tip), and only rarely does it pop straight up into his arms
+        const close = hyp(b.x - f.fx, b.y - f.fy) < 5;
+        if (S.rng.chance(close ? 0.45 : 0.55)) {
+          if (close && S.rng.chance(0.06)) return intercept(S, d, 'tips it up and comes down with it');
+          if (!close && S.rng.chance(0.34 + d.r.ball * 0.003)) return intercept(S, d, 'undercuts the route and picks it off');
+          event(S, close ? `Tipped at the line by ${d.pl.name}!` : `Tipped by ${d.pl.name}!`);
           credit(S, d, 'pd', 1);
           return endPlay(S, { type: 'incomplete' });
         }
@@ -947,7 +951,7 @@ function resolveCatch(S) {
     const edge = (dd - dr) * 0.35;
     const deepBall = hyp(f.tx - f.fx, f.ty - f.fy) > 22; // tracking a long ball over your shoulder with a DB on you
     const pCatch = clamp((deepBall ? 0.4 : 0.5) + (hand - cov) * 0.007 + edge + (rec.height - bestD.height) * 0.08, 0.15, 0.85);
-    const pInt = clamp(0.1 + (bestD.r.ball - 60) * 0.003 - edge * 0.3, 0.02, 0.3);
+    const pInt = clamp(0.2 + (bestD.r.ball - 60) * 0.003 - edge * 0.3, 0.03, 0.38);
     const roll = S.rng.next();
     if (dd < dr - 0.4 && S.rng.chance(0.07 * (1 - (bestD.mods.discipline || 0)))) return endPlay(S, { type: 'dpi', defender: bestD, spot: L.x });
     if (roll < pCatch) { event(S, `${rec.pl.name} makes a contested catch!`, 'big'); return catchMade(S, rec, false, bestD); }
@@ -967,7 +971,7 @@ function resolveCatch(S) {
     return endPlay(S, { type: 'incomplete', drop: true });
   }
   if (defIn) {
-    if (S.rng.chance(0.18 + bestD.r.ball * 0.004)) return intercept(S, bestD, 'reads it all the way');
+    if (S.rng.chance(0.31 + bestD.r.ball * 0.004)) return intercept(S, bestD, 'reads it all the way');
     credit(S, bestD, 'pd', 1);
     return endPlay(S, { type: 'incomplete', pbu: bestD });
   }
